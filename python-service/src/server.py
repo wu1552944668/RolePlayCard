@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request, send_file
+from werkzeug.exceptions import HTTPException
 
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
@@ -35,9 +36,25 @@ def create_app(app_data_dir: str) -> Flask:
     def test_settings() -> Any:
         return jsonify(service.test_settings(request.get_json(force=True)))
 
+    @app.post("/api/settings/text/test")
+    def test_text_settings() -> Any:
+        return jsonify(service.test_text_provider(request.get_json(force=True)))
+
+    @app.get("/api/settings/text/prefix-prompts")
+    def list_text_prefix_prompts() -> Any:
+        return jsonify(service.list_text_prefix_prompts())
+
+    @app.post("/api/settings/image/test")
+    def test_image_settings() -> Any:
+        return jsonify(service.test_image_provider(request.get_json(force=True)))
+
     @app.get("/api/drafts")
     def list_drafts() -> Any:
         return jsonify(service.list_drafts())
+
+    @app.post("/api/drafts/clear")
+    def clear_all_data() -> Any:
+        return jsonify(service.clear_all_data())
 
     @app.get("/api/drafts/<draft_id>")
     def load_draft(draft_id: str) -> Any:
@@ -58,6 +75,10 @@ def create_app(app_data_dir: str) -> Flask:
     @app.post("/api/ai/image")
     def generate_image() -> Any:
         return jsonify(service.generate_image(request.get_json(force=True)))
+
+    @app.post("/api/ai/card-from-story")
+    def generate_card_from_story() -> Any:
+        return jsonify(service.generate_card_from_story(request.get_json(force=True)))
 
     @app.post("/api/files/upload-image")
     def upload_image() -> Any:
@@ -100,6 +121,8 @@ def create_app(app_data_dir: str) -> Flask:
 
     @app.errorhandler(Exception)
     def handle_error(error: Exception) -> Any:  # noqa: ANN001
+        if isinstance(error, HTTPException):
+            return jsonify(fail(str(error), "http_error")), error.code or 500
         return jsonify(fail(str(error), "internal_error")), 500
 
     return app

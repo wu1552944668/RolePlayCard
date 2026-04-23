@@ -8,7 +8,7 @@ from typing import Any
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from models import default_character_entry, default_draft, default_world_book_entry, merge_defaults
+from models import default_character_entry, default_draft, default_opening_entry, default_world_book_entry, merge_defaults
 
 ALLOWED_POSITIONS = {
     "before_char",
@@ -168,7 +168,23 @@ def _build_character_book(draft: dict[str, Any]) -> dict[str, Any]:
 def draft_to_tavern_character(draft: dict[str, Any]) -> dict[str, Any]:
     characters = draft.get("characters", [])
     primary = characters[0] if characters else {}
-    opening = draft.get("opening", {})
+    openings = draft.get("openings", [])
+    if not isinstance(openings, list):
+        openings = []
+    if not openings and isinstance(draft.get("opening"), dict):
+        openings = [draft["opening"]]
+    primary_opening = openings[0] if openings and isinstance(openings[0], dict) else default_opening_entry()
+    alternate_greetings = []
+    for item in openings[1:]:
+        if not isinstance(item, dict):
+            continue
+        first_message = str(item.get("firstMessage", "")).strip()
+        if first_message:
+            alternate_greetings.append(first_message)
+    if not alternate_greetings:
+        legacy_greeting = str(primary_opening.get("greeting", "")).strip()
+        if legacy_greeting:
+            alternate_greetings.append(legacy_greeting)
     card = draft.get("card", {})
     return {
         "spec": "chara_card_v2",
@@ -177,13 +193,13 @@ def draft_to_tavern_character(draft: dict[str, Any]) -> dict[str, Any]:
             "name": card.get("name", "") or primary.get("name", ""),
             "description": primary.get("appearance", ""),
             "personality": primary.get("personality", ""),
-            "scenario": opening.get("scenario", ""),
-            "first_mes": opening.get("firstMessage", ""),
-            "mes_example": opening.get("exampleDialogue", "") or primary.get("speakingExample", ""),
+            "scenario": primary_opening.get("scenario", ""),
+            "first_mes": primary_opening.get("firstMessage", ""),
+            "mes_example": primary_opening.get("exampleDialogue", "") or primary.get("speakingExample", ""),
             "creator_notes": card.get("description", ""),
             "system_prompt": "",
             "post_history_instructions": "",
-            "alternate_greetings": [opening.get("greeting", "")] if opening.get("greeting", "") else [],
+            "alternate_greetings": alternate_greetings,
             "tags": ["RolePlayCard", "multi-character"],
             "creator": "RolePlayCard",
             "character_version": "0.0.2",
@@ -313,22 +329,36 @@ def tavern_payload_to_draft(payload: dict[str, Any], source_path: str) -> dict[s
 
     draft["card"]["name"] = data.get("name", "")
     draft["card"]["description"] = data.get("creator_notes", "")
-    draft["opening"]["scenario"] = data.get("scenario", "")
-    draft["opening"]["firstMessage"] = data.get("first_mes", "")
-    draft["opening"]["exampleDialogue"] = data.get("mes_example", "")
-    alternate = data.get("alternate_greetings", [])
-    if isinstance(alternate, list) and alternate:
-        draft["opening"]["greeting"] = str(alternate[0])
+    scenario = str(data.get("scenario", ""))
+    first_message = str(data.get("first_mes", ""))
+    example_dialogue = str(data.get("mes_example", ""))
 
-    character = default_character_entry()
-    character["triggerMode"] = "always"
-    character["name"] = data.get("name", "")
-    character["triggerKeywords"] = [character["name"]] if character["name"] else []
-    character["appearance"] = data.get("description", "")
-    character["personality"] = data.get("personality", "")
-    character["speakingExample"] = data.get("mes_example", "")
-    character["background"] = data.get("scenario", "")
-    draft["characters"] = [character]
+    openings = []
+    primary_opening = default_opening_entry()
+    primary_opening["title"] = "首屏 1"
+    primary_opening["scenario"] = scenario
+    primary_opening["firstMessage"] = first_message
+    primary_opening["exampleDialogue"] = example_dialogue
+    openings.append(primary_opening)
+
+    alternate = data.get("alternate_greetings", [])
+    if isinstance(alternate, list):
+        for index, item in enumerate(alternate, start=2):
+            message = str(item).strip()
+            if not message:
+                continue
+            alt_opening = default_opening_entry()
+            alt_opening["title"] = f"首屏 {index}"
+            alt_opening["scenario"] = scenario
+            alt_opening["firstMessage"] = message
+            alt_opening["exampleDialogue"] = example_dialogue
+            openings.append(alt_opening)
+    draft["openings"] = openings
+    draft["opening"] = openings[0]
+
+    # External cards can carry different character schemas; keep Role section empty
+    # and import canonical lorebook entries into worldBook instead.
+    draft["characters"] = [default_character_entry()]
 
     book = data.get("character_book", data.get("lorebook", {}))
     entries = []
@@ -352,7 +382,11 @@ def tavern_payload_to_draft(payload: dict[str, Any], source_path: str) -> dict[s
 def import_character_card(input_path: str) -> dict[str, Any]:
     roleplaycard_payload, chara_payload = _read_card_payload(input_path)
     if roleplaycard_payload:
-        return merge_defaults(default_draft(), roleplaycard_payload)
+        draft = merge_defaults(default_draft(), roleplaycard_payload)
+        draft["__importSource"] = "roleplaycard"
+        return draft
     if chara_payload:
-        return tavern_payload_to_draft(chara_payload, input_path)
+        draft = tavern_payload_to_draft(chara_payload, input_path)
+        draft["__importSource"] = "external"
+        return draft
     raise ValueError("未在文件中检测到可用的角色卡数据（roleplaycard/chara）。")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -73,3 +74,15 @@ class AppStorage:
         with path.open("w", encoding="utf-8") as handle:
             json.dump(merged, handle, ensure_ascii=False, indent=2)
         return merged
+
+    def clear_all_data(self) -> dict[str, int]:
+        removed_items = 0
+        if self.base_dir.exists():
+            for child in self.base_dir.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)
+                removed_items += 1
+        self._ensure_dirs()
+        return {"removedItems": removed_items}

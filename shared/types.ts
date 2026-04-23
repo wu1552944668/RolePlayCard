@@ -1,4 +1,4 @@
-export type ProviderKind = 'mock' | 'openai_compatible';
+export type ProviderKind = 'openai_compatible';
 
 export type EntryTriggerMode = 'always' | 'keyword';
 
@@ -19,6 +19,9 @@ export interface ProviderConfig {
   timeoutMs: number;
   temperature: number;
   enabled: boolean;
+  prefixPrompt?: string;
+  prefixPromptMode?: 'custom' | 'builtin';
+  builtinPrefixPromptModel?: string;
   extraHeaders?: Record<string, string>;
 }
 
@@ -67,10 +70,33 @@ export interface CardMeta {
 }
 
 export interface OpeningInfo {
+  id: string;
+  title: string;
   greeting: string;
   scenario: string;
   exampleDialogue: string;
   firstMessage: string;
+}
+
+export interface TimelineNode {
+  id: string;
+  parentId: string;
+  title: string;
+  timePoint: string;
+  trigger: string;
+  event: string;
+  objective: string;
+  conflict: string;
+  outcome: string;
+  nextHook: string;
+}
+
+export interface TimelineInfo {
+  title: string;
+  enabled: boolean;
+  triggerMode: 'always';
+  keywords: string[];
+  nodes: TimelineNode[];
 }
 
 export interface IllustrationInfo {
@@ -85,14 +111,17 @@ export interface IllustrationInfo {
 export interface CharacterDraft {
   id: string;
   version: number;
+  sourceType: 'roleplaycard' | 'external';
   createdAt: string;
   updatedAt: string;
   card: CardMeta;
   characters: CharacterDefinition[];
-  opening: OpeningInfo;
+  openings: OpeningInfo[];
+  opening?: OpeningInfo;
   worldBook: {
     entries: WorldBookEntry[];
   };
+  timeline: TimelineInfo;
   illustration: IllustrationInfo;
 }
 
@@ -140,6 +169,17 @@ export interface GenerateImageResponse {
   prompt: string;
 }
 
+export interface GenerateCardFromStoryRequest {
+  draft: CharacterDraft;
+  storyText: string;
+  settings?: AppSettings;
+}
+
+export interface GenerateCardFromStoryResponse {
+  draft: CharacterDraft;
+  raw: string;
+}
+
 export interface ExportCharacterCardRequest {
   draft: CharacterDraft;
   imagePath: string;
@@ -157,6 +197,7 @@ export interface ImportCharacterCardRequest {
 export interface ImportCharacterCardResponse {
   draft: CharacterDraft;
   sourcePath: string;
+  sourceType: 'roleplaycard' | 'external';
 }
 
 export interface UploadImageResponse {
@@ -167,4 +208,14 @@ export interface ProviderValidationResult {
   provider: ProviderKind;
   ok: boolean;
   detail: string;
+}
+
+export interface BuiltinPrefixPromptOption {
+  model: string;
+  filename: string;
+}
+
+export interface BuiltinPrefixPromptListResponse {
+  directory: string;
+  items: BuiltinPrefixPromptOption[];
 }

@@ -1,10 +1,15 @@
 :root {
-  color-scheme: light;
-  font-family: "Noto Sans SC", "Segoe UI", sans-serif;
-  background:
-    radial-gradient(circle at top, rgba(205, 92, 92, 0.18), transparent 35%),
-    linear-gradient(135deg, #f8f4ee 0%, #f3ebe1 50%, #efe6dc 100%);
-  color: #241d18;
+  color-scheme: dark;
+  font-family: "Rajdhani", "Noto Sans SC", "Segoe UI", sans-serif;
+  --bg-main: #070912;
+  --bg-panel: rgba(12, 19, 35, 0.84);
+  --bg-nested: rgba(11, 24, 42, 0.88);
+  --line: rgba(80, 233, 255, 0.34);
+  --line-strong: rgba(255, 77, 216, 0.55);
+  --text-main: #e7f4ff;
+  --text-muted: #8db3cc;
+  --cyan: #4ef9ff;
+  --pink: #ff4dd8;
 }
 
 * {
@@ -14,6 +19,11 @@
 body {
   margin: 0;
   min-height: 100vh;
+  color: var(--text-main);
+  background:
+    radial-gradient(1200px circle at 10% -20%, rgba(78, 249, 255, 0.16), transparent 45%),
+    radial-gradient(1000px circle at 110% 10%, rgba(255, 77, 216, 0.18), transparent 45%),
+    linear-gradient(145deg, #05070d 0%, #070912 45%, #0b1130 100%);
 }
 
 button,
@@ -24,33 +34,50 @@ select {
 }
 
 button {
-  border: none;
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 0.75rem 1rem;
-  background: #251d1a;
-  color: #fff8ef;
+  background: linear-gradient(135deg, rgba(255, 77, 216, 0.18), rgba(78, 249, 255, 0.14));
+  color: var(--text-main);
   cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(255, 77, 216, 0.15), 0 0 18px rgba(78, 249, 255, 0.18);
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 textarea,
 input,
 select {
   width: 100%;
-  border: 1px solid rgba(36, 29, 24, 0.16);
+  border: 1px solid rgba(78, 249, 255, 0.28);
   border-radius: 12px;
   padding: 0.85rem 0.95rem;
-  background: rgba(255, 252, 247, 0.92);
+  background: rgba(6, 11, 24, 0.82);
+  color: var(--text-main);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: rgba(255, 77, 216, 0.7);
+  box-shadow: 0 0 0 2px rgba(255, 77, 216, 0.14);
 }
 
 input.checkbox {
   width: 20px;
   height: 20px;
   padding: 0;
+  accent-color: var(--pink);
 }
 
 #app {
@@ -72,27 +99,37 @@ input.checkbox {
   flex-direction: column;
   gap: 1.25rem;
   padding: 1.5rem;
-  background: rgba(255, 247, 239, 0.9);
-  border-right: 1px solid rgba(36, 29, 24, 0.08);
+  background: rgba(6, 10, 22, 0.9);
+  border-right: 1px solid rgba(78, 249, 255, 0.22);
+  box-shadow: inset -1px 0 0 rgba(255, 77, 216, 0.14);
 }
 
 .eyebrow {
   margin: 0 0 0.4rem;
   font-size: 0.78rem;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #8f5e43;
+  color: var(--pink);
 }
 
 .sidebar h1,
 .panel-header h2 {
   margin: 0;
+  font-family: "Orbitron", "Rajdhani", "Noto Sans SC", sans-serif;
+  letter-spacing: 0.04em;
 }
 
 .muted,
 .draft-item span,
 .status {
-  color: #69584b;
+  color: var(--text-muted);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
 }
 
 .nav-group,
@@ -107,14 +144,14 @@ input.checkbox {
 .nav-button {
   width: 100%;
   justify-content: flex-start;
-  background: rgba(36, 29, 24, 0.08);
-  color: #241d18;
+  background: rgba(78, 249, 255, 0.08);
+  color: var(--text-main);
 }
 
 .nav-button.active,
 .primary {
-  background: #b14f35;
-  color: #fff9f2;
+  background: linear-gradient(135deg, rgba(255, 77, 216, 0.42), rgba(78, 249, 255, 0.3));
+  border-color: rgba(255, 77, 216, 0.75);
 }
 
 .draft-panel,
@@ -123,9 +160,10 @@ input.checkbox {
   flex-direction: column;
   gap: 1rem;
   padding: 1.2rem;
-  border-radius: 24px;
-  background: rgba(255, 251, 246, 0.92);
-  box-shadow: 0 18px 45px rgba(91, 60, 43, 0.08);
+  border-radius: 22px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(78, 249, 255, 0.22);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(78, 249, 255, 0.12);
 }
 
 .nested-card {
@@ -134,13 +172,63 @@ input.checkbox {
   gap: 0.85rem;
   padding: 0.95rem;
   border-radius: 16px;
-  border: 1px solid rgba(36, 29, 24, 0.12);
-  background: rgba(255, 247, 239, 0.75);
+  border: 1px solid rgba(255, 77, 216, 0.32);
+  background: var(--bg-nested);
 }
 
 .nested-card h3 {
   margin: 0;
   font-size: 1rem;
+}
+
+.overview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.overview-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.overview-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid rgba(78, 249, 255, 0.2);
+  background: rgba(5, 15, 30, 0.65);
+  color: var(--text-main);
+  text-align: left;
+}
+
+.overview-item.active {
+  background: linear-gradient(135deg, rgba(255, 77, 216, 0.2), rgba(78, 249, 255, 0.16));
+  border: 1px solid var(--line-strong);
+}
+
+.timeline-item {
+  position: relative;
+}
+
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: 0.35rem;
+  top: 0.45rem;
+  bottom: 0.45rem;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(78, 249, 255, 0.55), rgba(255, 77, 216, 0.4));
+}
+
+.overview-meta {
+  color: var(--text-muted);
+  font-size: 0.86rem;
 }
 
 .draft-list {
@@ -155,8 +243,9 @@ input.checkbox {
   flex-direction: column;
   align-items: flex-start;
   gap: 0.2rem;
-  background: rgba(36, 29, 24, 0.06);
-  color: #241d18;
+  border: 1px solid rgba(78, 249, 255, 0.2);
+  background: rgba(5, 15, 30, 0.65);
+  color: var(--text-main);
 }
 
 .main-panel {
@@ -169,6 +258,10 @@ input.checkbox {
   align-items: center;
   gap: 1rem;
   margin-bottom: 1rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(78, 249, 255, 0.18);
+  background: rgba(8, 13, 28, 0.7);
 }
 
 .content-grid {
@@ -210,8 +303,10 @@ input.checkbox {
   place-items: center;
   min-height: 280px;
   border-radius: 18px;
-  border: 1px dashed rgba(36, 29, 24, 0.16);
-  background: rgba(245, 236, 228, 0.7);
+  border: 1px dashed rgba(78, 249, 255, 0.5);
+  background:
+    linear-gradient(160deg, rgba(78, 249, 255, 0.08), rgba(255, 77, 216, 0.08)),
+    rgba(6, 10, 22, 0.8);
   overflow: hidden;
 }
 
@@ -224,7 +319,28 @@ input.checkbox {
 .warning-list {
   margin: 0;
   padding-left: 1.2rem;
-  color: #b14f35;
+  color: #ff72cf;
+}
+
+.loading-spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid rgba(78, 249, 255, 0.22);
+  border-top-color: var(--cyan);
+  border-right-color: var(--pink);
+  animation: spin 0.75s linear infinite;
+}
+
+.loading-inline {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1100px) {
@@ -244,4 +360,5 @@ input.checkbox {
   .field-grid {
     grid-template-columns: 1fr;
   }
+
 }

@@ -41,7 +41,28 @@ def test_export_character_card_embeds_tavern_metadata(tmp_path):
             "draft": {
                 "card": {"name": "露娜卡"},
                 "characters": [{"name": "露娜", "triggerMode": "always"}],
-                "opening": {"firstMessage": "你好。"},
+                "openings": [
+                    {"title": "首屏 1", "firstMessage": "你好。", "scenario": "酒馆"},
+                    {"title": "首屏 2", "firstMessage": "又见面了。", "scenario": "街头"},
+                ],
+                "timeline": {
+                    "title": "剧情推进",
+                    "enabled": False,
+                    "triggerMode": "always",
+                    "keywords": ["剧情推进", "主线节点"],
+                    "nodes": [
+                        {
+                            "title": "起点",
+                            "timePoint": "开场",
+                            "trigger": "玩家进入酒馆",
+                            "event": "露娜与玩家碰面并给出任务。",
+                            "objective": "建立目标",
+                            "conflict": "情报不完整",
+                            "outcome": "玩家接取调查线",
+                            "nextHook": "前往街头",
+                        }
+                    ],
+                },
             },
             "saveAs": False,
         }
@@ -62,10 +83,21 @@ def test_export_character_card_embeds_tavern_metadata(tmp_path):
     payload = json.loads(base64.b64decode(chara).decode("utf-8"))
     assert payload["spec"] == "chara_card_v2"
     assert payload["data"]["name"] == "露娜卡"
+    assert payload["data"]["first_mes"] == "你好。"
+    assert payload["data"]["alternate_greetings"] == ["又见面了。"]
     assert payload["data"]["character_book"]["entries"]
+    plot_book_entry = next(
+        (entry for entry in payload["data"]["character_book"]["entries"] if entry.get("comment") == "剧情推进"),
+        None,
+    )
+    assert isinstance(plot_book_entry, dict)
+    structured_plot = json.loads(plot_book_entry["content"])
+    assert structured_plot["guidanceType"] == "plot_progression"
+    assert structured_plot["nodes"][0]["title"] == "起点"
 
     saved_draft = json.loads(roleplaycard)
     assert saved_draft["card"]["name"] == "露娜卡"
+    assert any(entry.get("title") == "剧情推进" for entry in saved_draft["worldBook"]["entries"])
 
 
 def test_import_character_card_from_exported_png(tmp_path):
@@ -103,6 +135,8 @@ def test_import_character_card_from_exported_png(tmp_path):
     assert imported_draft["card"]["name"] == "导入测试卡"
     assert imported_draft["characters"][0]["name"] == "艾拉"
     assert imported_draft["worldBook"]["entries"]
+    assert all(entry["title"] != "剧情推进" for entry in imported_draft["worldBook"]["entries"])
+    assert imported_draft["timeline"]["title"] == "剧情推进"
     assert imported_draft["illustration"]["generatedImagePath"] == ""
 
 
@@ -208,3 +242,443 @@ def test_import_chara_v3_entries(tmp_path):
     draft = imported["data"]["draft"]
     assert draft["card"]["name"] == "V3卡"
     assert len(draft["worldBook"]["entries"]) == 1
+
+
+def test_import_chara_alternate_greetings_to_openings(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    payload = {
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "data": {
+            "name": "多首屏测试",
+            "scenario": "图书馆",
+            "first_mes": "这是主首屏",
+            "alternate_greetings": ["这是候选首屏A", "这是候选首屏B"],
+        },
+    }
+    input_path = tmp_path / "multi-openings.json"
+    input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    imported = service.import_character_card_path(str(input_path))
+    assert imported["success"] is True
+    draft = imported["data"]["draft"]
+    assert len(draft["openings"]) == 3
+    assert draft["openings"][0]["firstMessage"] == "这是主首屏"
+    assert draft["openings"][1]["firstMessage"] == "这是候选首屏A"
+    assert draft["openings"][2]["firstMessage"] == "这是候选首屏B"
+
+
+def test_clear_all_data(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    service.save_draft({"draft": {"card": {"name": "待删除草稿"}}, "saveAs": False})
+    service.upload_image_file("temp.png", b"123")
+    (tmp_path / "imports").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "imports" / "file.bin").write_bytes(b"abc")
+    (tmp_path / "exports").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "exports" / "file.bin").write_bytes(b"abc")
+
+    cleared = service.clear_all_data()
+    assert cleared["success"] is True
+    assert service.list_drafts()["data"] == []
+    assert (tmp_path / "drafts").exists()
+    assert (tmp_path / "cache" / "images").exists()
+    assert (tmp_path / "imports").exists()
+    assert (tmp_path / "exports").exists()
+
+
+def test_generate_card_from_story_multiple_characters_and_locations(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.calls = 0
+            self.prompts = []
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.calls += 1
+            self.prompts.append(prompt)
+            if self.calls == 1:
+                assert "不同重要时间点/阶段" in prompt
+                assert "plotProgression" in prompt
+                return json.dumps(
+                    {
+                        "storySummary": "两位主角共同调查旧案，主要活动地点是仓库与档案馆。",
+                        "card": {"name": "长篇小说角色卡", "description": "多角色叙事"},
+                        "characters": [
+                            {"name": "林夏", "age": "22", "hints": "记者，行动快，擅长追线索"},
+                            {"name": "顾沉", "age": "27", "hints": "刑警，稳重理性，重证据"},
+                        ],
+                        "openings": [
+                            {
+                                "title": "雨夜调查",
+                                "greeting": "我们又见面了。",
+                                "scenario": "暴雨中的旧城区",
+                                "exampleDialogue": "林夏：线索在仓库。\n顾沉：我先探路。",
+                                "firstMessage": "雨声盖过脚步声，你在路灯下看到我向你招手。",
+                            }
+                        ],
+                        "locations": [
+                            {
+                                "title": "旧城区仓库",
+                                "keywords": ["仓库", "旧城区"],
+                                "content": "废弃仓库，夜晚常有可疑交易。",
+                            },
+                            {
+                                "title": "中央档案馆",
+                                "keywords": ["档案馆", "资料"],
+                                "content": "保存城市历史案件卷宗，权限严格。",
+                            },
+                        ],
+                        "plotProgression": {
+                            "nodes": [
+                                {
+                                    "title": "雨夜接触",
+                                    "timePoint": "开端",
+                                    "trigger": "玩家抵达旧城区",
+                                    "event": "林夏与顾沉向玩家说明旧案异动。",
+                                    "objective": "建立合作并确定调查方向",
+                                    "conflict": "双方对线索来源不完全信任",
+                                    "outcome": "决定先查仓库再查档案馆",
+                                    "nextHook": "仓库交易记录",
+                                },
+                                {
+                                    "title": "仓库对峙",
+                                    "timePoint": "中段",
+                                    "trigger": "发现匿名交易痕迹",
+                                    "event": "三人确认旧案与走私链条有关。",
+                                    "objective": "锁定幕后组织",
+                                    "conflict": "线索被人为清理",
+                                    "outcome": "转向档案馆核验旧卷宗",
+                                    "nextHook": "档案权限异常",
+                                },
+                                {
+                                    "title": "档案揭示",
+                                    "timePoint": "后段",
+                                    "trigger": "取得核心卷宗",
+                                    "event": "核心证据显示旧案被系统性篡改。",
+                                    "objective": "形成下一阶段抓捕策略",
+                                    "conflict": "对手提前察觉并反制",
+                                    "outcome": "主线进入公开对抗阶段",
+                                    "nextHook": "寻找内部协助者",
+                                },
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            if self.calls == 2:
+                assert "已生成角色（监督输入，必须参考）" in prompt
+                assert "[]" in prompt
+                assert "这里是一段包含两位主角和两个主要地点的小说内容。" in prompt
+                return json.dumps(
+                    {
+                        "name": "林夏",
+                        "age": "22",
+                        "triggerKeywords": ["林夏", "记者", "调查"],
+                        "appearance": "黑发，短外套",
+                        "personality": "冷静执着",
+                        "speakingStyle": "简洁直接",
+                        "speakingExample": "{{user}}: 先去哪？\n林夏: 先去仓库，线索不会等人。",
+                        "background": "城市调查记者",
+                    },
+                    ensure_ascii=False,
+                )
+            if self.calls == 3:
+                assert "林夏" in prompt
+                assert "这里是一段包含两位主角和两个主要地点的小说内容。" in prompt
+                return json.dumps(
+                    {
+                        "name": "顾沉",
+                        "age": "27",
+                        "triggerKeywords": ["顾沉", "刑警", "证据"],
+                        "appearance": "高个，风衣",
+                        "personality": "克制理性",
+                        "speakingStyle": "平稳低声",
+                        "speakingExample": "{{user}}: 现在抓人吗？\n顾沉: 不，证据链先补齐。",
+                        "background": "重案组刑警",
+                    },
+                    ensure_ascii=False,
+                )
+            raise AssertionError("unexpected extra provider.generate call")
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+    dummy_provider = DummyTextProvider()
+    service.providers.text_providers["openai_compatible"] = dummy_provider
+
+    payload = {
+        "draft": {"card": {"name": ""}},
+        "storyText": "这里是一段包含两位主角和两个主要地点的小说内容。",
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "dummy-model",
+            }
+        },
+    }
+    result = service.generate_card_from_story(payload)
+    assert result["success"] is True
+    draft = result["data"]["draft"]
+    assert draft["card"]["name"] == "长篇小说角色卡"
+    assert len(draft["characters"]) == 2
+    assert draft["characters"][0]["name"] == "林夏"
+    assert draft["characters"][0]["age"] == "22"
+    assert draft["characters"][1]["name"] == "顾沉"
+    assert len(draft["worldBook"]["entries"]) == 2
+    assert all(entry["triggerMode"] == "keyword" for entry in draft["worldBook"]["entries"])
+    assert all(entry["title"] != "剧情推进" for entry in draft["worldBook"]["entries"])
+    assert draft["timeline"]["title"] == "剧情推进"
+    assert draft["timeline"]["triggerMode"] == "always"
+    assert draft["timeline"]["enabled"] is False
+    assert len(draft["timeline"]["nodes"]) >= 3
+    assert dummy_provider.calls == 3
+
+
+def test_generate_card_from_story_fallback_plot_progression_when_missing(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "storySummary": "一位调查员追查港口失踪案。",
+                        "card": {"name": "失踪案追查", "description": "单角色测试"},
+                        "characters": [{"name": "阿澈", "age": "24", "hints": "调查员"}],
+                        "openings": [
+                            {
+                                "title": "深夜港口",
+                                "greeting": "你来晚了。",
+                                "scenario": "暴雨夜的港口仓区",
+                                "exampleDialogue": "阿澈：线索在码头。\n你：有人跟踪你吗？",
+                                "firstMessage": "你刚靠近堆场，我从暗处把你拽进雨棚。",
+                            }
+                        ],
+                        "locations": [
+                            {
+                                "title": "北码头仓区",
+                                "keywords": ["码头", "仓区"],
+                                "content": "夜间货运频繁，监控盲区较多。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            if self.calls == 2:
+                assert "剧情推进结构化指导生成器" in prompt
+                # 第二次调用：剧情推进结构化指导，故意返回非 JSON 触发 fallback。
+                return "not-json"
+            if self.calls == 3:
+                return json.dumps(
+                    {
+                        "name": "阿澈",
+                        "age": "24",
+                        "triggerKeywords": ["阿澈", "调查员"],
+                        "appearance": "黑色雨衣，短发",
+                        "personality": "谨慎敏锐",
+                        "speakingStyle": "低声简短",
+                        "speakingExample": "{{user}}: 现在怎么办？\n阿澈: 先看货单，再看人。",
+                        "background": "长期追查港口案件",
+                    },
+                    ensure_ascii=False,
+                )
+            raise AssertionError("unexpected extra provider.generate call")
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+    dummy_provider = DummyTextProvider()
+    service.providers.text_providers["openai_compatible"] = dummy_provider
+    payload = {
+        "draft": {"card": {"name": ""}},
+        "storyText": "短篇小说文本",
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "dummy-model",
+            }
+        },
+    }
+    result = service.generate_card_from_story(payload)
+    assert result["success"] is True
+    draft = result["data"]["draft"]
+    assert len(draft["worldBook"]["entries"]) == 1
+    assert all(entry["title"] != "剧情推进" for entry in draft["worldBook"]["entries"])
+    assert draft["timeline"]["triggerMode"] == "always"
+    assert draft["timeline"]["enabled"] is False
+    assert len(draft["timeline"]["nodes"]) >= 3
+    assert dummy_provider.calls == 3
+
+
+def test_plot_progression_worldbook_entry_migrates_to_timeline(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    payload = {
+        "draft": {
+            "card": {"name": "迁移测试卡"},
+            "worldBook": {
+                "entries": [
+                    {
+                        "title": "剧情推进",
+                        "triggerMode": "always",
+                        "enabled": False,
+                        "keywords": ["剧情推进", "主线节点"],
+                        "content": json.dumps(
+                            {
+                                "guidanceType": "plot_progression",
+                                "nodes": [
+                                    {
+                                        "title": "节点A",
+                                        "timePoint": "开端",
+                                        "trigger": "遇见关键角色",
+                                        "event": "开始调查",
+                                        "objective": "确定目标",
+                                        "conflict": "信息不足",
+                                        "outcome": "进入下一阶段",
+                                        "nextHook": "前往仓库",
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                    {
+                        "title": "普通地点",
+                        "keywords": ["仓库"],
+                        "content": "一处普通地点。",
+                    },
+                ]
+            },
+        },
+        "saveAs": False,
+    }
+    saved = service.save_draft(payload)
+    assert saved["success"] is True
+    normalized = saved["data"]
+    assert normalized["timeline"]["title"] == "剧情推进"
+    assert len(normalized["timeline"]["nodes"]) == 1
+    assert normalized["timeline"]["nodes"][0]["title"] == "节点A"
+    assert all(entry["title"] != "剧情推进" for entry in normalized["worldBook"]["entries"])
+    assert len(normalized["worldBook"]["entries"]) == 1
+
+
+def test_list_text_prefix_prompts(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    prompts_dir = tmp_path / "jailbreak-prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    (prompts_dir / "gpt-4o.txt").write_text("内置破限 A", encoding="utf-8")
+    (prompts_dir / "gpt-4.1.txt").write_text("内置破限 B", encoding="utf-8")
+    service.text_prefix_prompts_dir = prompts_dir
+
+    result = service.list_text_prefix_prompts()
+    assert result["success"] is True
+    assert result["data"]["directory"] == str(prompts_dir)
+    assert result["data"]["items"] == [
+        {"model": "gpt-4.1", "filename": "gpt-4.1.txt"},
+        {"model": "gpt-4o", "filename": "gpt-4o.txt"},
+    ]
+
+
+def test_generate_field_uses_builtin_prefix_prompt(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    prompts_dir = tmp_path / "jailbreak-prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    (prompts_dir / "gpt-4o.txt").write_text("这是内置前置词", encoding="utf-8")
+    service.text_prefix_prompts_dir = prompts_dir
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.last_config = {}
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.last_config = dict(config)
+            return "生成结果"
+
+        def list_models(self, config):
+            return ["gpt-4o"]
+
+    dummy_provider = DummyTextProvider()
+    service.providers.text_providers["openai_compatible"] = dummy_provider
+
+    payload = {
+        "field": "card.description",
+        "mode": "generate",
+        "userInput": "",
+        "draft": {"card": {"name": "测试卡", "description": ""}},
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "gpt-4o",
+                "prefixPromptMode": "builtin",
+                "builtinPrefixPromptModel": "gpt-4o",
+                "prefixPrompt": "这是自定义兜底词",
+            }
+        },
+    }
+    result = service.generate_field(payload)
+    assert result["success"] is True
+    assert dummy_provider.last_config["prefixPrompt"] == "这是内置前置词"
+
+
+def test_generate_field_builtin_prefix_fallbacks_to_custom_when_missing(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    prompts_dir = tmp_path / "jailbreak-prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    service.text_prefix_prompts_dir = prompts_dir
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.last_config = {}
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.last_config = dict(config)
+            return "生成结果"
+
+        def list_models(self, config):
+            return ["gpt-4o"]
+
+    dummy_provider = DummyTextProvider()
+    service.providers.text_providers["openai_compatible"] = dummy_provider
+
+    payload = {
+        "field": "card.description",
+        "mode": "generate",
+        "userInput": "",
+        "draft": {"card": {"name": "测试卡", "description": ""}},
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "gpt-4o",
+                "prefixPromptMode": "builtin",
+                "builtinPrefixPromptModel": "gpt-4o",
+                "prefixPrompt": "这是自定义兜底词",
+            }
+        },
+    }
+    result = service.generate_field(payload)
+    assert result["success"] is True
+    assert dummy_provider.last_config["prefixPrompt"] == "这是自定义兜底词"

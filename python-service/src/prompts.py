@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from textwrap import dedent
 
@@ -13,23 +14,137 @@ FIELD_GUIDANCE = {
     "characters.*.appearance": "描述外貌，突出发型、服饰、体态和辨识特征。",
     "characters.*.personality": "概括性格特征、核心动机和行为倾向。",
     "characters.*.speakingStyle": "描述该角色的说话方式、语气和词汇习惯。",
-    "characters.*.speakingExample": "写一段能体现说话风格的简短示例。",
+    "characters.*.speakingExample": "写成对话体示例，至少 2 轮，用 `{{user}}:` 与 `角色名:` 的格式。",
     "characters.*.background": "概述成长经历、身份设定与关键事件。",
     "opening.greeting": "写一句简洁的角色卡开场问候。",
     "opening.scenario": "概括当前场景，给出时间、地点和氛围。",
     "opening.exampleDialogue": "提供一段体现角色卡整体风格的示例对话。",
     "opening.firstMessage": "写成可直接用于 TavernAI 的首条消息。",
+    "openings.*.greeting": "写一句简洁的角色卡开场问候。",
+    "openings.*.scenario": "概括当前场景，给出时间、地点和氛围。",
+    "openings.*.exampleDialogue": "提供一段体现角色卡整体风格的示例对话。",
+    "openings.*.firstMessage": "写成可直接用于 TavernAI 的首条消息。",
     "worldBook.entries.*.title": "写一个方便检索的世界书条目标题。",
     "worldBook.entries.*.keywords": "给出触发关键词，使用逗号分隔。",
     "worldBook.entries.*.content": "写成独立可读的设定条目内容，避免依赖上下文代词。",
 }
 
+FIELD_EXAMPLES = {
+    "card.name": [
+        "雾港旧案档案室",
+        "北岸异常调查组",
+    ],
+    "card.description": [
+        "近未来港口都市的群像调查角色卡，强调悬疑线索与角色关系推进。",
+        "玩家将与多名关键人物协作破案，主打冷色都市氛围与慢节奏推理。",
+    ],
+    "characters.*.name": [
+        "洛菈",
+        "尤兰达·雷文",
+    ],
+    "characters.*.triggerKeywords": [
+        "洛菈，小洛",
+        "尤兰达，雷文",
+    ],
+    "characters.*.age": [
+        "22",
+        "30",
+    ],
+    "characters.*.appearance": [
+        '''基础特征:
+                - 银白长发，束成高马尾
+                - 皮肤白皙，触感柔软
+                - 站姿笔挺，手持银白重型长枪
+            面部细节:
+                - 浅蓝色双眸，目光锐利直白
+                - 鼻梁高挺
+                - 嘴唇略薄，不苟言笑时呈平直线
+                - 战斗时眉头微微压低，瞳孔紧缩
+            身材体征:
+                - 高挑匀称，腰肢纤细，无明显大块肌肉痕迹
+                - 臀部: 曲线圆润饱满，臀肉柔软有弹性。
+                - 双腿: 修长，大腿肉感丰盈，小腿线条流畅紧绷。''',
+        '''基础特征:
+                - 暗红色齐脖短发，发顶有两只隐蔽的同色猫耳
+                - 小麦色皮肤
+                - 瞳孔呈竖瞳状的金琥珀色，眼尾天然上挑的猫眼
+            面部细节:
+                - 右侧眉骨有一道斜向断眉
+                - 笑起来时会露出两颗尖锐的小虎牙
+                - 嘴唇丰润，常涂暗红色唇脂
+                - 锁定猎物或进入战斗状态时，会习惯性地舔舐上唇
+            身材体征:
+                - 骨架纤细，身形柔韧，四肢修长且充满爆发力
+                - 胸部饱满沉甸，走动时有明显晃动感
+                - 腹部有清晰的马甲线，腰肢纤细盈握
+                - 臀部圆润上翘，身后有一条暗红色细长猫尾''',
+    ],
+    "characters.*.personality": [
+        "冷静克制，习惯先观察后行动，对真相有执念。",
+        "外冷内热，重承诺，面对危险时决断迅速。",
+    ],
+    "characters.*.speakingStyle": [
+        "句子短，信息密度高，少用情绪词。",
+        "语气平稳但压迫感强，常以反问推进对话。",
+    ],
+    "characters.*.speakingExample": [
+        "{{user}}: 你好，你看起来很赶。\n林夏: 嗯，案发现场刚有新线索。先跟我走，路上我讲细节。",
+        "{{user}}: 你为什么一直盯着那份记录？\n顾沉: 因为它被改过三次。你先回答我，你昨晚几点到的仓库？",
+    ],
+    "characters.*.background": [
+        "曾任都市媒体记者，因追查旧案离职，现以自由身份调查。",
+        "重案组出身，处理过多起失踪案，对档案系统异常敏感。",
+    ],
+    "opening.greeting": [
+        "晚上好，你也在查这起案子？",
+        "别紧张，我只是来确认你是否站在同一边。",
+    ],
+    "opening.scenario": [
+        "深夜港区仓库，雨声很大，路灯忽明忽暗。",
+        "档案馆地下层，旧风机轰鸣，纸页有霉味。",
+    ],
+    "opening.exampleDialogue": [
+        "林夏：这份记录被改过。\n顾沉：改过不止一次，手法还不同。",
+        "你：为什么叫我来？\n她：因为你是最后见过受害者的人。",
+    ],
+    "opening.firstMessage": [
+        "雨夜里你推开生锈铁门，我正站在堆满旧木箱的走道尽头，示意你别出声。",
+        "档案灯管闪了两下，你听见身后脚步靠近，我把一份泛黄卷宗塞进你手里。",
+    ],
+    "openings.*.greeting": [
+        "终于等到你了，我们得马上开始。",
+        "你来得正好，这里有你必须看的东西。",
+    ],
+    "openings.*.scenario": [
+        "凌晨地铁终点站，站台几乎空无一人。",
+        "废弃电台天台，冷风夹着潮湿雾气。",
+    ],
+    "openings.*.exampleDialogue": [
+        "你：我们还要信任他吗？\n她：信任不重要，结果才重要。",
+        "他：你听见了吗？\n你：听见了，不止一个人。",
+    ],
+    "openings.*.firstMessage": [
+        "电台塔顶红灯一闪一闪，你刚踏上最后一级台阶，就看见我把对讲机递了过来。",
+        "列车进站风压掀起你的衣角，我从广告灯箱后走出，低声喊了你的名字。",
+    ],
+    "worldBook.entries.*.title": [
+        "旧城区仓库群",
+        "南部丰原-精灵王庭",
+    ],
+    "worldBook.entries.*.keywords": [
+        "仓库, 旧城区, 走私",
+        "精灵王庭, 翡翠叶海, 纯血精灵",
+    ],
+    "worldBook.entries.*.content": [
+        "旧城区仓库群长期闲置，夜间常出现匿名车辆，部分仓库地下有改造痕迹。",
+        "盘踞在丰原腹地的原始森林中心，被参天古木的巨大穹顶包裹。内部由资深高阶术骑与奶骑组成的纯白元老院统领，外围由翡翠禁卫负责守卫。",
+    ],
+}
 
-def _trim(text: str, limit: int = 900) -> str:
-    clean = (text or "").strip()
-    if len(clean) <= limit:
-        return clean
-    return clean[:limit].rstrip() + "..."
+
+def _trim(text: str, limit: int | None = 900) -> str:
+    _ = limit
+    return str(text or "")
 
 
 def _normalize_field(field: str) -> str:
@@ -67,15 +182,19 @@ def _render_world_book_context(entries: list[dict]) -> str:
 
 def build_context(draft: dict) -> str:
     card = draft.get("card", {})
-    opening = draft.get("opening", {})
+    openings = draft.get("openings", [])
+    if not isinstance(openings, list):
+        openings = []
+    primary_opening = openings[0] if openings and isinstance(openings[0], dict) else draft.get("opening", {})
     characters = draft.get("characters", [])
     world_entries = draft.get("worldBook", {}).get("entries", [])
     parts = [
         f"角色卡名称: {_trim(card.get('name', ''), 120)}",
         f"角色卡描述: {_trim(card.get('description', ''), 320)}",
-        f"开场白: {_trim(opening.get('greeting', ''), 220)}",
-        f"场景: {_trim(opening.get('scenario', ''), 280)}",
-        f"首条消息: {_trim(opening.get('firstMessage', ''), 360)}",
+        f"首屏信息数量: {len(openings) if openings else 1}",
+        f"开场白: {_trim(primary_opening.get('greeting', ''), 220)}",
+        f"场景: {_trim(primary_opening.get('scenario', ''), 280)}",
+        f"首条消息: {_trim(primary_opening.get('firstMessage', ''), 360)}",
         f"角色数量: {len(characters)}",
         _render_character_context(characters),
         f"世界书条目数量: {len(world_entries)}",
@@ -87,7 +206,20 @@ def build_context(draft: dict) -> str:
 def build_field_prompt(field: str, mode: str, user_input: str, draft: dict) -> str:
     normalized = _normalize_field(field)
     instruction = FIELD_GUIDANCE.get(normalized, "根据已知设定生成当前字段内容。")
+    examples = FIELD_EXAMPLES.get(normalized, [])
+    example_block = "\n".join(f"- {item}" for item in examples) if examples else "- （无示例）"
     action = "改写并增强" if mode == "rewrite" else "生成"
+    extra_requirements: list[str] = []
+    if normalized == "characters.*.speakingExample":
+        extra_requirements.append("4. speakingExample 必须使用对话体，按 `{{user}}:` 与角色名开头逐行书写。")
+    if normalized == "characters.*.triggerKeywords":
+        extra_requirements.append(f"4. {_build_trigger_keywords_contract()}")
+    if normalized == "characters.*.appearance":
+        extra_requirements.append(
+            "4. "
+            + _build_appearance_contract().replace("\n", "\n   ")
+        )
+    extra_requirement_text = "\n".join(extra_requirements)
     return dedent(
         f"""
         你正在协助创建 AI 角色卡（多角色 + 世界书条目模式）。
@@ -95,7 +227,10 @@ def build_field_prompt(field: str, mode: str, user_input: str, draft: dict) -> s
         要求: {instruction}
 
         当前字段已有内容:
-        {_trim(user_input, 600) or '无'}
+        {_trim(user_input, None) or '无'}
+
+        字段示例（可参考风格，不要机械照抄）:
+        {example_block}
 
         已填写上下文:
         {build_context(draft)}
@@ -104,8 +239,9 @@ def build_field_prompt(field: str, mode: str, user_input: str, draft: dict) -> s
         1. 只输出字段正文，不要加标题和解释。
         2. 保持设定一致，避免与已有角色和世界书冲突。
         3. 优先生成可直接粘贴到角色卡中的自然中文。
+        {extra_requirement_text}
         """
-    ).strip()
+    )
 
 
 def build_image_prompt(draft: dict) -> tuple[str, str]:
@@ -125,6 +261,263 @@ def build_image_prompt(draft: dict) -> tuple[str, str]:
         Background cues: {_trim(primary.get('background', ''), 220)}
         Style preference: {style or 'cinematic anime portrait, expressive lighting, polished illustration'}
         """
-    ).strip().replace("\n", " ")
+    ).replace("\n", " ")
     negative = "low quality, blurry, extra fingers, text, watermark, cropped face, distorted anatomy"
     return prompt, negative
+
+
+def _json_preview(value: object, limit: int | None = 2400) -> str:
+    return _trim(json.dumps(value, ensure_ascii=False), limit)
+
+
+def _extract_section_titles(text: str) -> list[str]:
+    titles: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("-"):
+            continue
+        matched = re.fullmatch(r"([^:：]{1,24})[:：]", line)
+        if not matched:
+            continue
+        title = matched.group(1).strip()
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+def _appearance_section_titles() -> list[str]:
+    titles: list[str] = []
+    for item in FIELD_EXAMPLES.get("characters.*.appearance", []):
+        for title in _extract_section_titles(str(item)):
+            if title not in titles:
+                titles.append(title)
+    return titles or ["基础特征", "面部细节", "身材体征"]
+
+
+def _build_trigger_keywords_contract() -> str:
+    return "triggerKeywords 必须贴近示例写法：优先使用角色名、简称、别称、常用称呼，避免“男主/女主/她/他”等泛词；建议 2-6 个关键词。"
+
+
+def _build_appearance_contract() -> str:
+    section_titles = _appearance_section_titles()
+    section_order = " -> ".join(f"{title}:" for title in section_titles)
+    lines = [
+        f"appearance 必须使用多行分段格式，分段顺序为：{section_order}",
+        "每个分段必须单独占一行标题，并且至少 2 条以 `- ` 开头的要点。",
+        "appearance 不允许只写成一段散文或一句话。",
+    ]
+    return "\n".join(lines)
+
+
+def _render_character_generation_examples() -> str:
+    example_fields = [
+        ("name", "characters.*.name"),
+        ("triggerKeywords", "characters.*.triggerKeywords"),
+        ("appearance", "characters.*.appearance"),
+        ("personality", "characters.*.personality"),
+        ("speakingStyle", "characters.*.speakingStyle"),
+        ("speakingExample", "characters.*.speakingExample"),
+        ("background", "characters.*.background"),
+    ]
+    lines: list[str] = []
+    for label, key in example_fields:
+        examples = FIELD_EXAMPLES.get(key, [])
+        if not examples:
+            continue
+        lines.append(f"- {label}:")
+        lines.extend([f"  - {_trim(str(item), 260)}" for item in examples[:2]])
+    return "\n".join(lines) if lines else "- （无示例）"
+
+
+def build_story_outline_prompt(story_text: str, draft: dict) -> str:
+    return dedent(
+        f"""
+        你是角色卡结构提取器。请从“短篇小说/剧情文本”中抽取主干信息，并返回严格 JSON。
+        要求：
+        1. 必须识别多个主要角色（若存在），角色只输出“种子信息”，不要展开长篇细节。
+        2. 必须识别多个主要地点（若存在），并产出世界书条目草稿。
+        3. openings 需要对应故事中的“不同重要时间点/阶段”，按时间推进顺序给出多个首屏（若文本存在多个关键节点）。
+        4. 必须给出剧情推进结构 plotProgression，用节点化方式拆解主线走向。
+        5. 需要给出 storySummary，供后续逐角色生成使用。
+        6. 输出必须是合法 JSON，不要加 markdown，不要解释。
+
+        输出 JSON 结构：
+        {{
+          "storySummary": "80-200字摘要，概括主线、冲突、关系与主要地点",
+          "card": {{
+            "name": "角色卡名称",
+            "description": "角色卡描述"
+          }},
+          "characters": [
+            {{
+              "name": "角色名",
+              "age": "年龄或外观年龄",
+              "hints": "该角色的关键线索，60-120字"
+            }}
+          ],
+          "openings": [
+            {{
+              "title": "时间点标题（如：雨夜初遇 / 档案馆对峙）",
+              "greeting": "开场白",
+              "scenario": "该时间点的场景（包含时间/地点/局势）",
+              "exampleDialogue": "示例对话",
+              "firstMessage": "首条消息"
+            }}
+          ],
+          "locations": [
+            {{
+              "title": "地点名",
+              "keywords": ["地点关键词1", "地点关键词2"],
+              "content": "地点信息"
+            }}
+          ],
+          "plotProgression": {{
+            "nodes": [
+              {{
+                "title": "节点标题",
+                "timePoint": "时间点/阶段",
+                "trigger": "触发条件",
+                "event": "关键事件",
+                "objective": "角色目标",
+                "conflict": "主要冲突或阻碍",
+                "outcome": "节点结果",
+                "nextHook": "下一节点衔接线索"
+              }}
+            ]
+          }}
+        }}
+
+        额外约束：
+        1. openings 优先给 2-5 个关键时间点，不要只给一个静态场景。
+        2. plotProgression.nodes 至少 3 个，按剧情推进顺序排列，避免空洞描述。
+        3. 所有字段内容应可直接用于角色卡编辑，不写“待补充”“略”等占位词。
+
+        注意：
+        - locations 与 plotProgression 是不同维度：locations 写“地点设定”，plotProgression 写“剧情节点推进”。
+        - 不要输出 JSON 之外的任何文字。
+
+        已有草稿上下文（可参考但不受限）：
+        {build_context(draft)}
+
+        小说文本：
+        {_trim(story_text, None)}
+        """
+    )
+
+
+def build_character_from_story_prompt(
+    target_character: dict,
+    previous_characters: list[dict],
+    story_summary: str,
+    story_text: str,
+    draft: dict,
+) -> str:
+    target_name = _trim(str(target_character.get("name", "")), 120)
+    example_block = _render_character_generation_examples()
+    trigger_keywords_contract = _build_trigger_keywords_contract()
+    appearance_contract = _build_appearance_contract()
+    return dedent(
+        f"""
+        你是角色卡生成器。请只为“一个目标角色”生成完整字段，并返回严格 JSON 对象。
+        目标角色：{target_name or '未命名角色'}
+
+        生成要求：
+        1. 字段完整：name, age, triggerKeywords, appearance, personality, speakingStyle, speakingExample, background。
+        2. speakingExample 必须是对话体，至少 2 轮，使用 `{{{{user}}}}:` 与 `角色名:` 逐行书写。
+        3. 必须与“已生成角色”保持一致，不冲突，并避免重复设定。
+        4. {trigger_keywords_contract}
+        5. {appearance_contract}
+        6. 输出必须是合法 JSON 对象，不要 markdown，不要解释。
+
+        字段示例（形式为硬约束，内容按故事改写）：
+        {example_block}
+
+        输出 JSON 结构：
+        {{
+          "name": "角色名",
+          "age": "年龄或外观年龄",
+          "triggerKeywords": ["关键词1", "关键词2"],
+          "appearance": "外貌",
+          "personality": "性格",
+          "speakingStyle": "说话方式",
+          "speakingExample": "{{{{user}}}}: ...\\n角色名: ...",
+          "background": "背景"
+        }}
+
+        目标角色种子信息：
+        {_json_preview(target_character, 1200)}
+
+        已生成角色（监督输入，必须参考）：
+        {_json_preview(previous_characters, 2400) if previous_characters else "[]"}
+
+        故事摘要：
+        {_trim(story_summary, None) or "无"}
+
+        故事原文全文（必须参考，不可忽略）：
+        {_trim(story_text, None) or "无"}
+
+        当前草稿上下文：
+        {build_context(draft)}
+
+        输出前自检（不要输出本段）：
+        1. triggerKeywords 是否符合示例表达方式（名词化称呼、非泛词）。
+        2. appearance 是否是分段 + 要点格式，而不是散文段落。
+        """
+    )
+
+
+def build_plot_progression_prompt(
+    story_text: str,
+    story_summary: str,
+    characters: list[dict],
+    openings: list[dict],
+    locations: list[dict],
+    draft: dict,
+) -> str:
+    return dedent(
+        f"""
+        你是剧情推进结构化指导生成器。请基于“故事原文全文”输出严格 JSON，对主线推进进行节点化拆解。
+        输出必须是合法 JSON，不要 markdown，不要解释。
+
+        输出 JSON 结构：
+        {{
+          "plotProgression": {{
+            "nodes": [
+              {{
+                "title": "节点标题",
+                "timePoint": "时间点/阶段",
+                "trigger": "触发条件",
+                "event": "关键事件",
+                "objective": "角色目标",
+                "conflict": "主要冲突或阻碍",
+                "outcome": "节点结果",
+                "nextHook": "下一节点衔接线索"
+              }}
+            ]
+          }}
+        }}
+
+        约束：
+        1. 至少输出 3 个节点，按时间推进顺序排列。
+        2. 节点内容必须可用于引导剧情，不要空洞描述。
+        3. timePoint 要与首屏重要时间点保持一致或可映射。
+
+        已抽取角色：
+        {_json_preview(characters, None)}
+
+        已抽取首屏时间点：
+        {_json_preview(openings, None)}
+
+        已抽取地点条目：
+        {_json_preview(locations, None)}
+
+        故事摘要：
+        {_trim(story_summary, None) or "无"}
+
+        故事原文全文（必须参考，不可忽略）：
+        {_trim(story_text, None) or "无"}
+
+        当前草稿上下文：
+        {build_context(draft)}
+        """
+    )
