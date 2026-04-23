@@ -132,7 +132,7 @@ class RolePlayCardService:
         resolved["prefixPrompt"] = self._resolve_text_prefix_prompt(config)
         return resolved
 
-    def _extract_plot_nodes(self, outline: dict[str, Any]) -> list[dict[str, str]]:
+    def _extract_plot_nodes(self, outline: dict[str, Any]) -> list[dict[str, Any]]:
         raw_progression = outline.get("plotProgression", outline.get("plot_progression"))
         raw_nodes: Any = []
         if isinstance(raw_progression, dict):
@@ -142,13 +142,25 @@ class RolePlayCardService:
         elif isinstance(outline.get("plotNodes"), list):
             raw_nodes = outline.get("plotNodes", [])
 
-        nodes: list[dict[str, str]] = []
+        nodes: list[dict[str, Any]] = []
         if not isinstance(raw_nodes, list):
             return nodes
-        for item in raw_nodes[:12]:
+        used_ids: set[str] = set()
+        for index, item in enumerate(raw_nodes[:12], start=1):
             if not isinstance(item, dict):
                 continue
+            base_id = str(item.get("id", item.get("nodeId", item.get("key", "")))).strip()
+            if not base_id:
+                base_id = f"n{index}"
+            node_id = base_id
+            suffix = 2
+            while node_id in used_ids:
+                node_id = f"{base_id}_{suffix}"
+                suffix += 1
+            used_ids.add(node_id)
+
             node = {
+                "id": node_id,
                 "title": str(item.get("title", item.get("name", item.get("stage", "")))),
                 "timePoint": str(item.get("timePoint", item.get("time", item.get("timeline", "")))),
                 "trigger": str(item.get("trigger", item.get("triggerCondition", item.get("condition", "")))),
@@ -157,14 +169,94 @@ class RolePlayCardService:
                 "conflict": str(item.get("conflict", item.get("obstacle", ""))),
                 "outcome": str(item.get("outcome", item.get("result", ""))),
                 "nextHook": str(item.get("nextHook", item.get("next", item.get("nextStep", "")))),
-                "parentId": str(item.get("parentId", item.get("parent", ""))),
+                "parentId": "",
+                "_parentRef": str(
+                    item.get("parentId", item.get("parentNodeId", item.get("parentTitle", item.get("parent", ""))))
+                ).strip(),
             }
-            if not any(node.values()):
+            if not any(
+                [
+                    node["title"],
+                    node["timePoint"],
+                    node["trigger"],
+                    node["event"],
+                    node["objective"],
+                    node["conflict"],
+                    node["outcome"],
+                    node["nextHook"],
+                ]
+            ):
                 continue
             if not node["title"]:
                 node["title"] = f"节点 {len(nodes) + 1}"
             nodes.append(node)
+
+        id_map = {str(node["id"]): str(node["id"]) for node in nodes}
+        title_map = {str(node["title"]): str(node["id"]) for node in nodes if str(node.get("title", ""))}
+        for node in nodes:
+            parent_ref = str(node.pop("_parentRef", "")).strip()
+            if not parent_ref:
+                node["parentId"] = ""
+                continue
+            resolved_parent = ""
+            if parent_ref in id_map:
+                resolved_parent = id_map[parent_ref]
+            elif parent_ref in title_map:
+                resolved_parent = title_map[parent_ref]
+            if resolved_parent == str(node["id"]):
+                resolved_parent = ""
+            node["parentId"] = resolved_parent
         return nodes
+
+    def _enforce_progression_parenting(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not nodes:
+            return []
+
+        normalized_nodes: list[dict[str, Any]] = []
+        for index, item in enumerate(nodes, start=1):
+            node = dict(item)
+            node_id = str(node.get("id", "")).strip() or f"n{index}"
+            node["id"] = node_id
+            node["parentId"] = ""
+            normalized_nodes.append(node)
+
+        groups: list[list[int]] = []
+        last_key = ""
+        for idx, node in enumerate(normalized_nodes):
+            raw_time = str(node.get("timePoint", "")).strip()
+            key = re.sub(r"\s+", " ", raw_time.casefold()) if raw_time else f"__index_{idx}"
+            if groups and key == last_key:
+                groups[-1].append(idx)
+            else:
+                groups.append([idx])
+                last_key = key
+
+        if not groups:
+            return normalized_nodes
+
+        root_idx = groups[0][0]
+        root_id = str(normalized_nodes[root_idx]["id"])
+        normalized_nodes[root_idx]["parentId"] = ""
+        mainline_parent_id = root_id
+
+        for idx in groups[0][1:]:
+            node_id = str(normalized_nodes[idx]["id"])
+            normalized_nodes[idx]["parentId"] = "" if node_id == root_id else root_id
+
+        for group in groups[1:]:
+            if len(group) == 1:
+                idx = group[0]
+                node_id = str(normalized_nodes[idx]["id"])
+                normalized_nodes[idx]["parentId"] = "" if node_id == mainline_parent_id else mainline_parent_id
+                mainline_parent_id = node_id
+                continue
+
+            for idx in group:
+                node_id = str(normalized_nodes[idx]["id"])
+                normalized_nodes[idx]["parentId"] = "" if node_id == mainline_parent_id else mainline_parent_id
+            mainline_parent_id = str(normalized_nodes[group[0]]["id"])
+
+        return normalized_nodes
 
     def _fallback_plot_nodes(
         self,
@@ -237,7 +329,7 @@ class RolePlayCardService:
         if not nodes:
             nodes = self._fallback_plot_nodes(story_summary, openings, locations)
         timeline = merge_defaults(default_timeline(), {})
-        timeline["nodes"] = nodes
+        timeline["nodes"] = self._enforce_progression_parenting(nodes)
         return timeline
 
     def _build_plot_progression_world_entry(self, timeline: dict[str, Any]) -> dict[str, Any]:

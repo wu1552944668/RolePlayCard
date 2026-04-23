@@ -50,6 +50,7 @@ def default_character_entry() -> dict[str, Any]:
         "id": str(uuid4()),
         "enabled": True,
         "triggerMode": "keyword",
+        "isUserRole": False,
         "name": "",
         "triggerKeywords": [],
         "age": "",
@@ -314,7 +315,16 @@ def normalize_draft(incoming: dict[str, Any]) -> dict[str, Any]:
             )
             if keyword and keyword.strip()
         ]
+        merged["isUserRole"] = bool(merged.get("isUserRole", False))
         normalized_characters.append(merged)
+    user_role_found = False
+    for character in normalized_characters:
+        if not character.get("isUserRole", False):
+            continue
+        if not user_role_found:
+            user_role_found = True
+            continue
+        character["isUserRole"] = False
     normalized["characters"] = normalized_characters or [default_character_entry()]
 
     normalized_world_entries: list[dict[str, Any]] = []

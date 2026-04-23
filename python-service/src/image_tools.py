@@ -35,6 +35,26 @@ def _split_keywords(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _replace_role_name_with_user(text: str, role_name: str) -> str:
+    source = str(text or "")
+    target = str(role_name or "").strip()
+    if not source or not target:
+        return source
+    return source.replace(target, "{{user}}")
+
+
+def _project_user_role_character(character: dict[str, Any]) -> dict[str, Any]:
+    if not bool(character.get("isUserRole", False)):
+        return character
+    projected = dict(character)
+    original_name = str(character.get("name", "")).strip()
+    projected["name"] = "{{user}}"
+    projected["triggerMode"] = "always"
+    projected["triggerKeywords"] = ["{{user}}", "玩家", "你"]
+    projected["speakingExample"] = _replace_role_name_with_user(str(character.get("speakingExample", "")), original_name)
+    return projected
+
+
 def _character_to_lore_content(character: dict[str, Any]) -> str:
     parts = [
         f"姓名: {character.get('name', '').strip()}",
@@ -96,6 +116,7 @@ def _character_to_book_entry(character: dict[str, Any]) -> dict[str, Any]:
             "roleplaycard": {
                 "entryType": "character",
                 "sourceId": character.get("id"),
+                "isUserRole": bool(character.get("isUserRole", False)),
                 "triggerMode": trigger_mode,
                 "triggerProbability": _entry_probability(character),
                 "insertionPosition": position,
@@ -149,7 +170,7 @@ def _build_character_book(draft: dict[str, Any]) -> dict[str, Any]:
     entries = []
     for character in draft.get("characters", []):
         if character.get("name", "").strip():
-            entries.append(_character_to_book_entry(character))
+            entries.append(_character_to_book_entry(_project_user_role_character(character)))
     for entry in draft.get("worldBook", {}).get("entries", []):
         if entry.get("content", "").strip():
             entries.append(_world_entry_to_book_entry(entry))
@@ -167,7 +188,8 @@ def _build_character_book(draft: dict[str, Any]) -> dict[str, Any]:
 
 def draft_to_tavern_character(draft: dict[str, Any]) -> dict[str, Any]:
     characters = draft.get("characters", [])
-    primary = characters[0] if characters else {}
+    npc_candidates = [item for item in characters if not bool(item.get("isUserRole", False))]
+    primary = npc_candidates[0] if npc_candidates else (characters[0] if characters else {})
     openings = draft.get("openings", [])
     if not isinstance(openings, list):
         openings = []

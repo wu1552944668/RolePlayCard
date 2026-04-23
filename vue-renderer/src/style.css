@@ -226,6 +226,53 @@ input.checkbox {
   background: linear-gradient(180deg, rgba(78, 249, 255, 0.55), rgba(255, 77, 216, 0.4));
 }
 
+.timeline-graph-wrap {
+  overflow: auto;
+  border: 1px solid rgba(78, 249, 255, 0.25);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(78, 249, 255, 0.06), rgba(255, 77, 216, 0.06)),
+    rgba(6, 12, 24, 0.8);
+}
+
+.timeline-graph {
+  display: block;
+  min-width: 100%;
+}
+
+.timeline-graph-edge {
+  fill: none;
+  stroke: rgba(78, 249, 255, 0.46);
+  stroke-width: 1.8;
+}
+
+.timeline-graph-node {
+  cursor: pointer;
+}
+
+.timeline-graph-node rect {
+  fill: rgba(8, 18, 33, 0.94);
+  stroke: rgba(78, 249, 255, 0.36);
+  stroke-width: 1.2;
+}
+
+.timeline-graph-node.active rect {
+  fill: rgba(31, 18, 42, 0.95);
+  stroke: rgba(255, 77, 216, 0.9);
+  stroke-width: 1.5;
+}
+
+.timeline-graph-title {
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--text-main);
+}
+
+.timeline-graph-subtitle {
+  font-size: 11px;
+  fill: var(--text-muted);
+}
+
 .overview-meta {
   color: var(--text-muted);
   font-size: 0.86rem;

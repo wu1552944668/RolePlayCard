@@ -164,6 +164,7 @@ const createCharacter = (): CharacterDefinition => ({
   id: crypto.randomUUID(),
   enabled: true,
   triggerMode: 'keyword',
+  isUserRole: false,
   name: '',
   triggerKeywords: [],
   age: '',
@@ -466,6 +467,92 @@ const timelineRows = computed(() => {
   return rows;
 });
 
+const timelineGraphNodeWidth = 172;
+const timelineGraphNodeHeight = 58;
+
+const timelineGraph = computed(() => {
+  const rows = timelineRows.value;
+  const nodeWidth = timelineGraphNodeWidth;
+  const nodeHeight = timelineGraphNodeHeight;
+  const gapX = 52;
+  const gapY = 16;
+  const padding = 18;
+
+  if (rows.length === 0) {
+    return {
+      width: 0,
+      height: 0,
+      nodes: [] as Array<{
+        id: string;
+        x: number;
+        y: number;
+        title: string;
+        subtitle: string;
+      }>,
+      edges: [] as Array<{
+        id: string;
+        d: string;
+      }>,
+    };
+  }
+
+  const maxDepth = rows.reduce((max, row) => Math.max(max, row.depth), 0);
+  const width = padding * 2 + (maxDepth + 1) * nodeWidth + maxDepth * gapX;
+  const height = padding * 2 + rows.length * nodeHeight + Math.max(0, rows.length - 1) * gapY;
+
+  const nodes = rows.map((row, index) => {
+    const x = padding + row.depth * (nodeWidth + gapX);
+    const y = padding + index * (nodeHeight + gapY);
+    const title = summarizeText(row.node.title || `节点 ${index + 1}`, 12);
+    const subtitle = summarizeText(
+      row.node.timePoint || row.node.event || row.node.trigger || '未设说明',
+      14,
+    );
+    return {
+      id: row.node.id,
+      x,
+      y,
+      title,
+      subtitle,
+    };
+  });
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges: Array<{ id: string; d: string }> = [];
+  rows.forEach((row) => {
+    if (!row.node.parentId) return;
+    const parent = byId.get(row.node.parentId);
+    const child = byId.get(row.node.id);
+    if (!parent || !child) return;
+    const x1 = parent.x + nodeWidth;
+    const y1 = parent.y + nodeHeight / 2;
+    const x2 = child.x;
+    const y2 = child.y + nodeHeight / 2;
+    const cp1x = x1 + (x2 - x1) * 0.45;
+    const cp2x = x1 + (x2 - x1) * 0.55;
+    const d = `M ${x1} ${y1} C ${cp1x} ${y1}, ${cp2x} ${y2}, ${x2} ${y2}`;
+    edges.push({ id: `${row.node.parentId}-${row.node.id}`, d });
+  });
+
+  return {
+    width,
+    height,
+    nodes,
+    edges,
+  };
+});
+
+function timelineParentTitle(node: TimelineNode): string {
+  if (!node.parentId) {
+    return '';
+  }
+  const parent = draft.timeline.nodes.find((item) => item.id === node.parentId);
+  if (!parent) {
+    return '未命名父节点';
+  }
+  return parent.title || parent.timePoint || '未命名父节点';
+}
+
 let autosaveTimer: number | null = null;
 let saveRequestSeq = 0;
 let ignoreSaveBeforeSeq = 0;
@@ -637,9 +724,31 @@ function syncSelectionIndexes() {
 }
 
 function applyDraftPayload(payload: CharacterDraft) {
+  const normalizedCharacters = (Array.isArray(payload.characters) ? payload.characters : [])
+    .map((item) => ({
+      ...createCharacter(),
+      ...item,
+      id: item.id || crypto.randomUUID(),
+      triggerKeywords: Array.isArray(item.triggerKeywords) ? item.triggerKeywords.filter(Boolean) : [],
+      advanced: {
+        ...createAdvanced(),
+        ...(item.advanced ?? {}),
+      },
+      isUserRole: Boolean(item.isUserRole),
+    }));
+  if (normalizedCharacters.length === 0) {
+    normalizedCharacters.push(createCharacter());
+  }
+  const firstUserRoleIndex = normalizedCharacters.findIndex((item) => item.isUserRole);
+  if (firstUserRoleIndex >= 0) {
+    normalizedCharacters.forEach((character, index) => {
+      character.isUserRole = index === firstUserRoleIndex;
+    });
+  }
   const normalized = {
     ...payload,
     openings: ensureOpenings(payload),
+    characters: normalizedCharacters,
     timeline: ensureTimeline(payload),
     worldBook: {
       entries: (payload.worldBook?.entries ?? []).filter((entry) => entry.title !== '剧情推进'),
@@ -795,11 +904,11 @@ async function requestAIField(field: string, mode: GenerateFieldRequest['mode'],
 async function generateCardFromInput() {
   if (!ensureApiConfigured('text')) return;
   if (!cardGenerateInput.value.trim()) {
-    setStatus('请先输入角色描述，再执行一键生成。');
+    setStatus('请先输入短篇小说全文，再执行一键生成。');
     return;
   }
   cardGenerateBusy.value = true;
-  setStatus('正在根据小说内容解析主要角色与地点...');
+  setStatus('正在根据短篇小说解析角色、地点与剧情时间线...');
   try {
     const result = await apiRequest<GenerateCardFromStoryResponse>('/ai/card-from-story', {
       method: 'POST',
@@ -910,6 +1019,16 @@ function setCharacterKeywords(index: number, text: string) {
   draft.characters[index].triggerKeywords = splitKeywords(text);
 }
 
+function setCharacterUserRole(index: number, enabled: boolean) {
+  if (!enabled) {
+    draft.characters[index].isUserRole = false;
+    return;
+  }
+  draft.characters.forEach((character, currentIndex) => {
+    character.isUserRole = currentIndex === index;
+  });
+}
+
 function setWorldEntryKeywords(index: number, text: string) {
   draft.worldBook.entries[index].keywords = splitKeywords(text);
 }
@@ -1002,7 +1121,7 @@ async function importCard() {
 }
 
 function pickStoryText() {
-  setStatus('请选择要导入的 txt 文本...');
+  setStatus('请选择短篇小说 txt 文本...');
   storyTextInputRef.value?.click();
 }
 
@@ -1101,7 +1220,7 @@ async function onStoryTextInputChange(event: Event) {
       return;
     }
     cardGenerateInput.value = content;
-    setStatus(`已加载角色信息文本: ${file.name}`);
+    setStatus(`已加载短篇小说文本: ${file.name}`);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     setStatus(`读取 txt 文件失败: ${detail}`);
@@ -1242,8 +1361,8 @@ onMounted(async () => {
     <aside class="sidebar">
       <div>
         <p class="eyebrow">RolePlayCard</p>
-        <h1>AI 角色卡创建器</h1>
-        <p class="muted">Web 版：多角色 + 条目化世界书</p>
+        <h1>短篇小说角色卡生成器</h1>
+        <p class="muted">从故事文本自动生成可游玩角色卡（角色、地点、时间线）</p>
       </div>
 
       <div class="nav-group">
@@ -1311,6 +1430,29 @@ onMounted(async () => {
         <div class="editor-column">
           <section class="card">
             <div class="panel-header">
+              <h2>短篇小说一键生成</h2>
+            </div>
+            <p class="muted">这是一个根据短篇小说自动生成可游玩角色卡的工具：先抽取剧情与地点，再逐角色生成。</p>
+            <div class="field">
+              <label for="cardGenerateInput">短篇小说全文（用于一键生成）</label>
+              <textarea
+                id="cardGenerateInput"
+                v-model="cardGenerateInput"
+                rows="7"
+                placeholder="粘贴短篇小说全文，或上传 txt。建议包含角色、地点、关键事件与时间推进。"
+              />
+              <div class="inline-actions">
+                <button @click="pickStoryText" :disabled="cardGenerateBusy">上传短篇小说 txt</button>
+                <button @click="generateCardFromInput" :disabled="cardGenerateBusy">
+                  <span v-if="cardGenerateBusy" class="loading-spinner loading-inline" />
+                  {{ cardGenerateBusy ? '生成中...' : '根据短篇小说生成角色卡' }}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="panel-header">
               <h2>角色卡信息</h2>
             </div>
             <div class="field">
@@ -1346,22 +1488,6 @@ onMounted(async () => {
                 </button>
               </div>
             </div>
-            <div class="field">
-              <label for="cardGenerateInput">角色信息输入（用于一键生成）</label>
-              <textarea
-                id="cardGenerateInput"
-                v-model="cardGenerateInput"
-                rows="4"
-                placeholder="输入角色背景、风格、关系、剧情方向等，AI会生成角色卡主要内容"
-              />
-              <div class="inline-actions">
-                <button @click="pickStoryText" :disabled="cardGenerateBusy">上传 txt</button>
-                <button @click="generateCardFromInput" :disabled="cardGenerateBusy">
-                  <span v-if="cardGenerateBusy" class="loading-spinner loading-inline" />
-                  {{ cardGenerateBusy ? '生成中...' : 'AI 一键生成角色卡' }}
-                </button>
-              </div>
-            </div>
           </section>
 
           <section class="card">
@@ -1385,6 +1511,7 @@ onMounted(async () => {
                   >
                     <strong>{{ character.name || `角色 ${index + 1}` }}</strong>
                     <span class="overview-meta">
+                      {{ character.isUserRole ? '玩家扮演' : 'NPC' }} ·
                       {{ character.triggerMode === 'always' ? '蓝灯' : '绿灯' }} · 关键词 {{ character.triggerKeywords.length }} 个
                     </span>
                   </button>
@@ -1401,6 +1528,13 @@ onMounted(async () => {
                         <option value="always">蓝灯（永久触发）</option>
                         <option value="keyword">绿灯（关键词触发）</option>
                       </select>
+                      <label>玩家扮演（导出替换为 user）</label>
+                      <input
+                        :checked="character.isUserRole"
+                        type="checkbox"
+                        class="checkbox"
+                        @change="setCharacterUserRole(index, ($event.target as HTMLInputElement).checked)"
+                      />
                     </div>
 
                     <div class="field">
@@ -1630,6 +1764,47 @@ onMounted(async () => {
                 @input="setTimelineKeywords(($event.target as HTMLInputElement).value)"
               />
             </div>
+            <div v-if="timelineRows.length > 0" class="timeline-graph-wrap">
+              <svg
+                class="timeline-graph"
+                :viewBox="`0 0 ${timelineGraph.width} ${timelineGraph.height}`"
+                xmlns="http://www.w3.org/2000/svg"
+                role="img"
+                aria-label="时间线结构图"
+              >
+                <g>
+                  <path
+                    v-for="edge in timelineGraph.edges"
+                    :key="edge.id"
+                    :d="edge.d"
+                    class="timeline-graph-edge"
+                  />
+                </g>
+                <g>
+                  <g
+                    v-for="node in timelineGraph.nodes"
+                    :key="node.id"
+                    :class="['timeline-graph-node', { active: selectedTimelineNodeId === node.id }]"
+                    @click="selectTimelineNode(node.id)"
+                  >
+                    <rect
+                      :x="node.x"
+                      :y="node.y"
+                      :width="timelineGraphNodeWidth"
+                      :height="timelineGraphNodeHeight"
+                      rx="10"
+                      ry="10"
+                    />
+                    <text :x="node.x + 10" :y="node.y + 24" class="timeline-graph-title">
+                      {{ node.title }}
+                    </text>
+                    <text :x="node.x + 10" :y="node.y + 41" class="timeline-graph-subtitle">
+                      {{ node.subtitle }}
+                    </text>
+                  </g>
+                </g>
+              </svg>
+            </div>
             <div class="overview-list">
               <div
                 v-for="(row, rowIndex) in timelineRows"
@@ -1643,7 +1818,12 @@ onMounted(async () => {
                 >
                   <strong>{{ row.node.title || `节点 ${rowIndex + 1}` }}</strong>
                   <span class="overview-meta">
-                    {{ row.node.timePoint || '未设时间点' }} · {{ summarizeText(row.node.event, 48) }}
+                    {{
+                      row.depth === 0
+                        ? '根节点'
+                        : `子节点 · 父节点: ${timelineParentTitle(row.node)}`
+                    }}
+                    · {{ row.node.timePoint || '未设时间点' }} · {{ summarizeText(row.node.event, 36) }}
                   </span>
                 </button>
                 <div v-if="selectedTimelineNodeId === row.node.id" class="nested-card">

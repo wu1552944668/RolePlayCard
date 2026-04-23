@@ -43,6 +43,7 @@ export interface CharacterDefinition {
   id: string;
   enabled: boolean;
   triggerMode: EntryTriggerMode;
+  isUserRole: boolean;
   name: string;
   triggerKeywords: string[];
   age: string;

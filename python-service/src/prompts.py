@@ -374,7 +374,9 @@ def build_story_outline_prompt(story_text: str, draft: dict) -> str:
           "plotProgression": {{
             "nodes": [
               {{
+                "id": "节点ID（如 n1）",
                 "title": "节点标题",
+                "parentId": "父节点ID，根节点填空字符串",
                 "timePoint": "时间点/阶段",
                 "trigger": "触发条件",
                 "event": "关键事件",
@@ -391,6 +393,10 @@ def build_story_outline_prompt(story_text: str, draft: dict) -> str:
         1. openings 优先给 2-5 个关键时间点，不要只给一个静态场景。
         2. plotProgression.nodes 至少 3 个，按剧情推进顺序排列，避免空洞描述。
         3. 所有字段内容应可直接用于角色卡编辑，不写“待补充”“略”等占位词。
+        4. plotProgression 支持树结构：主线节点 parentId 为空，分支节点指向父节点 id。
+        5. 每个 plotProgression 节点必须包含稳定 id，且同一输出中 id 不可重复。
+        6. 时间最前的第一个节点必须是根节点（parentId 为空）；时间继续向后时，默认是前一节点的子节点。
+        7. 若同一时间点出现多个并行发展节点，则它们都应挂在同一父节点下形成分叉。
 
         注意：
         - locations 与 plotProgression 是不同维度：locations 写“地点设定”，plotProgression 写“剧情节点推进”。
@@ -484,7 +490,9 @@ def build_plot_progression_prompt(
           "plotProgression": {{
             "nodes": [
               {{
+                "id": "节点ID（如 n1）",
                 "title": "节点标题",
+                "parentId": "父节点ID，根节点填空字符串",
                 "timePoint": "时间点/阶段",
                 "trigger": "触发条件",
                 "event": "关键事件",
@@ -501,6 +509,10 @@ def build_plot_progression_prompt(
         1. 至少输出 3 个节点，按时间推进顺序排列。
         2. 节点内容必须可用于引导剧情，不要空洞描述。
         3. timePoint 要与首屏重要时间点保持一致或可映射。
+        4. 允许树结构分支：主线节点 parentId 为空，分支节点 parentId 指向父节点 id。
+        5. 每个节点必须给出唯一 id。
+        6. 时间最前的第一个节点必须是根节点；后续时间点默认接在前一节点下。
+        7. 同一时间点的并行节点要挂在同一父节点下，表示“同时发展”的分叉。
 
         已抽取角色：
         {_json_preview(characters, None)}

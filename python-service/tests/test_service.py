@@ -40,7 +40,22 @@ def test_export_character_card_embeds_tavern_metadata(tmp_path):
         {
             "draft": {
                 "card": {"name": "露娜卡"},
-                "characters": [{"name": "露娜", "triggerMode": "always"}],
+                "characters": [
+                    {
+                        "name": "维克",
+                        "isUserRole": True,
+                        "appearance": "黑色风衣",
+                        "personality": "沉稳克制",
+                        "speakingExample": "{{user}}: 我们先去哪？\n维克: 先查码头。",
+                        "background": "前特工，擅长潜入与情报分析。",
+                    },
+                    {
+                        "name": "露娜",
+                        "triggerMode": "always",
+                        "appearance": "银发长外套",
+                        "personality": "冷静敏锐",
+                    },
+                ],
                 "openings": [
                     {"title": "首屏 1", "firstMessage": "你好。", "scenario": "酒馆"},
                     {"title": "首屏 2", "firstMessage": "又见面了。", "scenario": "街头"},
@@ -83,9 +98,24 @@ def test_export_character_card_embeds_tavern_metadata(tmp_path):
     payload = json.loads(base64.b64decode(chara).decode("utf-8"))
     assert payload["spec"] == "chara_card_v2"
     assert payload["data"]["name"] == "露娜卡"
+    assert payload["data"]["description"] == "银发长外套"
     assert payload["data"]["first_mes"] == "你好。"
     assert payload["data"]["alternate_greetings"] == ["又见面了。"]
     assert payload["data"]["character_book"]["entries"]
+    user_entry = next(
+        (
+            entry
+            for entry in payload["data"]["character_book"]["entries"]
+            if isinstance(entry, dict) and entry.get("comment") == "{{user}}"
+        ),
+        None,
+    )
+    assert isinstance(user_entry, dict)
+    assert user_entry.get("constant") is True
+    user_content = str(user_entry.get("content", ""))
+    assert "姓名: {{user}}" in user_content
+    assert "背景: 前特工，擅长潜入与情报分析。" in user_content
+    assert "维克:" not in user_content
     plot_book_entry = next(
         (entry for entry in payload["data"]["character_book"]["entries"] if entry.get("comment") == "剧情推进"),
         None,
@@ -437,6 +467,9 @@ def test_generate_card_from_story_multiple_characters_and_locations(tmp_path):
     assert draft["timeline"]["triggerMode"] == "always"
     assert draft["timeline"]["enabled"] is False
     assert len(draft["timeline"]["nodes"]) >= 3
+    assert draft["timeline"]["nodes"][0]["parentId"] == ""
+    assert draft["timeline"]["nodes"][1]["parentId"] == draft["timeline"]["nodes"][0]["id"]
+    assert draft["timeline"]["nodes"][2]["parentId"] == draft["timeline"]["nodes"][1]["id"]
     assert dummy_provider.calls == 3
 
 
@@ -522,7 +555,135 @@ def test_generate_card_from_story_fallback_plot_progression_when_missing(tmp_pat
     assert draft["timeline"]["triggerMode"] == "always"
     assert draft["timeline"]["enabled"] is False
     assert len(draft["timeline"]["nodes"]) >= 3
+    assert draft["timeline"]["nodes"][0]["parentId"] == ""
+    assert draft["timeline"]["nodes"][1]["parentId"] == draft["timeline"]["nodes"][0]["id"]
+    assert draft["timeline"]["nodes"][2]["parentId"] == draft["timeline"]["nodes"][1]["id"]
     assert dummy_provider.calls == 3
+
+
+def test_generate_card_from_story_branches_when_same_timepoint(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "storySummary": "分叉测试",
+                        "card": {"name": "分叉结构测试", "description": "时间线分叉"},
+                        "characters": [{"name": "伊芙", "age": "21", "hints": "调查员"}],
+                        "openings": [
+                            {
+                                "title": "开场",
+                                "greeting": "开始吧。",
+                                "scenario": "雨夜街区",
+                                "exampleDialogue": "伊芙：我们分头查。",
+                                "firstMessage": "雨夜里你看见我在路口挥手。",
+                            }
+                        ],
+                        "locations": [{"title": "街区", "keywords": ["街区"], "content": "案发现场附近。"}],
+                        "plotProgression": {
+                            "nodes": [
+                                {
+                                    "title": "节点A",
+                                    "timePoint": "开端",
+                                    "trigger": "玩家到场",
+                                    "event": "接到主线",
+                                    "objective": "建立目标",
+                                    "conflict": "线索不足",
+                                    "outcome": "进入调查",
+                                    "nextHook": "中段A",
+                                },
+                                {
+                                    "title": "节点B1",
+                                    "timePoint": "中段",
+                                    "trigger": "查第一条线",
+                                    "event": "锁定嫌疑人甲",
+                                    "objective": "确认动机",
+                                    "conflict": "证词矛盾",
+                                    "outcome": "出现分支1",
+                                    "nextHook": "后段",
+                                },
+                                {
+                                    "title": "节点B2",
+                                    "timePoint": "中段",
+                                    "trigger": "查第二条线",
+                                    "event": "锁定嫌疑人乙",
+                                    "objective": "确认不在场证明",
+                                    "conflict": "监控缺失",
+                                    "outcome": "出现分支2",
+                                    "nextHook": "后段",
+                                },
+                                {
+                                    "title": "节点C",
+                                    "timePoint": "后段",
+                                    "trigger": "合并两条线索",
+                                    "event": "逼近真相",
+                                    "objective": "收束主线",
+                                    "conflict": "对手反制",
+                                    "outcome": "终局前夜",
+                                    "nextHook": "终局",
+                                },
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            if self.calls == 2:
+                return json.dumps(
+                    {
+                        "name": "伊芙",
+                        "age": "21",
+                        "triggerKeywords": ["伊芙", "调查员"],
+                        "appearance": "短发，风衣",
+                        "personality": "冷静",
+                        "speakingStyle": "简练",
+                        "speakingExample": "{{user}}: 接下来？\n伊芙: 两条线并查。",
+                        "background": "调查员",
+                    },
+                    ensure_ascii=False,
+                )
+            raise AssertionError("unexpected extra provider.generate call")
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+    dummy_provider = DummyTextProvider()
+    service.providers.text_providers["openai_compatible"] = dummy_provider
+    payload = {
+        "draft": {"card": {"name": ""}},
+        "storyText": "分叉小说文本",
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "dummy-model",
+            }
+        },
+    }
+    result = service.generate_card_from_story(payload)
+    assert result["success"] is True
+    nodes = result["data"]["draft"]["timeline"]["nodes"]
+    assert len(nodes) >= 4
+
+    node_a = nodes[0]
+    node_b1 = nodes[1]
+    node_b2 = nodes[2]
+    node_c = nodes[3]
+
+    assert node_a["parentId"] == ""
+    assert node_b1["parentId"] == node_a["id"]
+    assert node_b2["parentId"] == node_a["id"]
+    assert node_c["parentId"] == node_b1["id"]
+    assert dummy_provider.calls == 2
 
 
 def test_plot_progression_worldbook_entry_migrates_to_timeline(tmp_path):
