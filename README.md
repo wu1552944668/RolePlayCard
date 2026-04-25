@@ -93,3 +93,7 @@ npm run test
 
 - [version.md](./version.md)
 
+## 引用
+
+破限提示词来自：  
+- Levoglucose 发布在https://discord.com/channels/1134557553011998840/1482001001702756423

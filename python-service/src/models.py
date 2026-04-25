@@ -6,6 +6,14 @@ import json
 from typing import Any
 from uuid import uuid4
 
+DEFAULT_CHAPTER_REGEX = (
+    r"(?imx)^[ \t]*(第[0-9零〇一二三四五六七八九十百千两]+[章节卷回篇集部幕][^\n\r]*"
+    r"|卷[0-9零〇一二三四五六七八九十百千两]+[^\n\r]*"
+    r"|幕[0-9零〇一二三四五六七八九十百千两]+[^\n\r]*"
+    r"|chapter[ \t]+[0-9ivxlcdm]+[^\n\r]*"
+    r"|volume[ \t]+[0-9ivxlcdm]+[^\n\r]*)[ \t]*$"
+)
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -31,8 +39,16 @@ def default_settings() -> dict[str, Any]:
     return {
         "textProvider": default_provider_config(),
         "imageProvider": default_provider_config(),
+        "storySegmentation": default_story_segmentation_settings(),
         "exportDirectory": "",
         "recentDirectory": "",
+    }
+
+
+def default_story_segmentation_settings() -> dict[str, Any]:
+    return {
+        "chapterRegex": DEFAULT_CHAPTER_REGEX,
+        "maxCharsPerSegment": 20000,
     }
 
 
@@ -107,7 +123,17 @@ def default_timeline() -> dict[str, Any]:
         "enabled": False,
         "triggerMode": "always",
         "keywords": ["剧情推进", "主线节点", "剧情走向"],
+        "timeBaseline": "T0=当前主线时刻",
+        "timeFormat": "T±<offset> | 时间描述",
         "nodes": [],
+    }
+
+
+def default_story_generation_state() -> dict[str, Any]:
+    return {
+        "totalSegments": 0,
+        "currentSegmentIndex": 0,
+        "segmentationMode": "hard_buffer",
     }
 
 
@@ -139,6 +165,7 @@ def default_draft() -> dict[str, Any]:
             "negativePrompt": "",
             "stylePrompt": "",
         },
+        "storyGenerationState": None,
     }
 
 
@@ -363,6 +390,8 @@ def normalize_draft(incoming: dict[str, Any]) -> dict[str, Any]:
     timeline["title"] = str(timeline.get("title", "")).strip() or "剧情推进"
     timeline["triggerMode"] = "always"
     timeline["enabled"] = bool(timeline.get("enabled", False))
+    timeline["timeBaseline"] = str(timeline.get("timeBaseline", "")).strip() or "T0=当前主线时刻"
+    timeline["timeFormat"] = str(timeline.get("timeFormat", "")).strip() or "T±<offset> | 时间描述"
     timeline["keywords"] = [
         keyword.strip()
         for keyword in (
@@ -376,5 +405,31 @@ def normalize_draft(incoming: dict[str, Any]) -> dict[str, Any]:
         timeline["keywords"] = ["剧情推进", "主线节点", "剧情走向"]
     timeline["nodes"] = _normalize_timeline_nodes(timeline.get("nodes", []))
     normalized["timeline"] = timeline
+
+    story_state = normalized.get("storyGenerationState")
+    if isinstance(story_state, dict):
+        merged_state = merge_defaults(default_story_generation_state(), story_state)
+        try:
+            total_segments = max(0, int(merged_state.get("totalSegments", 0)))
+        except (TypeError, ValueError):
+            total_segments = 0
+        try:
+            current_segment = max(0, int(merged_state.get("currentSegmentIndex", 0)))
+        except (TypeError, ValueError):
+            current_segment = 0
+        if total_segments > 0:
+            current_segment = min(current_segment, total_segments)
+        else:
+            current_segment = 0
+        segmentation_mode = str(merged_state.get("segmentationMode", "hard_buffer")).strip().lower()
+        if segmentation_mode not in {"chapter", "hard_buffer"}:
+            segmentation_mode = "hard_buffer"
+        normalized["storyGenerationState"] = {
+            "totalSegments": total_segments,
+            "currentSegmentIndex": current_segment,
+            "segmentationMode": segmentation_mode,
+        }
+    else:
+        normalized["storyGenerationState"] = None
 
     return normalized

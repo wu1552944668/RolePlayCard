@@ -552,6 +552,8 @@ def test_generate_card_from_story_fallback_plot_progression_when_missing(tmp_pat
     draft = result["data"]["draft"]
     assert len(draft["worldBook"]["entries"]) == 1
     assert all(entry["title"] != "剧情推进" for entry in draft["worldBook"]["entries"])
+    assert draft["openings"]
+    assert draft["openings"][0]["firstMessage"].strip()
     assert draft["timeline"]["triggerMode"] == "always"
     assert draft["timeline"]["enabled"] is False
     assert len(draft["timeline"]["nodes"]) >= 3
@@ -559,6 +561,80 @@ def test_generate_card_from_story_fallback_plot_progression_when_missing(tmp_pat
     assert draft["timeline"]["nodes"][1]["parentId"] == draft["timeline"]["nodes"][0]["id"]
     assert draft["timeline"]["nodes"][2]["parentId"] == draft["timeline"]["nodes"][1]["id"]
     assert dummy_provider.calls == 3
+
+
+def test_generate_card_from_story_fallback_openings_when_outline_missing_openings(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+
+    class DummyTextProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(
+                    {
+                        "storySummary": "主角在寒夜中追查关键线索。",
+                        "card": {"name": "缺省首屏测试", "description": "测试 fallback openings"},
+                        "characters": [{"name": "阿澈", "hints": "调查员"}],
+                        "locations": [{"title": "峡谷据点", "keywords": ["峡谷"], "content": "据点设定"}],
+                        "plotProgression": {
+                            "nodes": [
+                                {
+                                    "id": "n1",
+                                    "title": "追猎开端",
+                                    "timePoint": "寒夜当前",
+                                    "trigger": "收到线报后出发",
+                                    "event": "抵达峡谷外围开始侦察",
+                                    "objective": "确认目标动向",
+                                    "conflict": "风雪掩盖痕迹",
+                                    "outcome": "锁定可疑路线",
+                                    "nextHook": "深入峡谷",
+                                }
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            if self.calls == 2:
+                return json.dumps(
+                    {
+                        "name": "阿澈",
+                        "triggerKeywords": ["阿澈"],
+                        "background": "调查员",
+                    },
+                    ensure_ascii=False,
+                )
+            raise AssertionError("unexpected extra provider.generate call")
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+    service.providers.text_providers["openai_compatible"] = DummyTextProvider()
+    payload = {
+        "draft": {"card": {"name": ""}},
+        "storyText": "测试文本",
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "dummy-model",
+            }
+        },
+    }
+    result = service.generate_card_from_story(payload)
+    assert result["success"] is True
+    draft = result["data"]["draft"]
+    assert draft["openings"]
+    opening = draft["openings"][0]
+    assert opening["title"].strip()
+    assert opening["scenario"].strip()
+    assert opening["firstMessage"].strip()
 
 
 def test_generate_card_from_story_branches_when_same_timepoint(tmp_path):
@@ -684,6 +760,171 @@ def test_generate_card_from_story_branches_when_same_timepoint(tmp_path):
     assert node_b2["parentId"] == node_a["id"]
     assert node_c["parentId"] == node_b1["id"]
     assert dummy_provider.calls == 2
+
+
+def test_enforce_progression_parenting_starts_new_root_on_flashback_cut(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    nodes = [
+        {
+            "id": "n1",
+            "title": "家破人亡",
+            "timePoint": "三年前的冬夜",
+            "event": "加油站被洗劫",
+        },
+        {
+            "id": "n2",
+            "title": "仇恨发芽",
+            "timePoint": "三年前之后数月",
+            "event": "她开始追查责任人",
+        },
+        {
+            "id": "n3",
+            "title": "任务开启",
+            "timePoint": "当前（寒夜）",
+            "event": "主线行动正式开始",
+        },
+        {
+            "id": "n4",
+            "title": "潜入推进",
+            "timePoint": "次日凌晨",
+            "event": "进入目标区域",
+        },
+    ]
+    normalized = service._enforce_progression_parenting(nodes)
+    assert normalized[0]["parentId"] == ""
+    assert normalized[1]["parentId"] == normalized[0]["id"]
+    assert normalized[2]["parentId"] == ""
+    assert normalized[3]["parentId"] == normalized[2]["id"]
+
+
+def test_extract_plot_nodes_compacts_overlong_fields(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    payload = {
+        "plotProgression": {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "title": "这是一个特别特别长而且会超过限制的时间线节点标题，需要被压缩",
+                    "timePoint": "三年前那个暴雨不停的夜晚之后的漫长低谷阶段",
+                    "trigger": "因为前线指挥官突然下达了多重互相冲突且执行成本很高的临时命令导致局势失控",
+                    "event": "她在撤离途中连续遭遇误导、伏击和队内冲突，最终在极端混乱中被迫做出高风险选择并承担后果，整段描述故意写得很长来测试压缩能力",
+                    "objective": "在资源严重不足和信息不完整的情况下确保关键目标存活并维持主线推进",
+                    "conflict": "外部火力封锁与内部信任崩塌同时发生，任何选择都会带来代价",
+                    "outcome": "虽然暂时脱险但失去了关键补给与同伴支持，后续难度显著上升",
+                    "nextHook": "转入次日凌晨的前哨站渗透行动并验证关键情报真伪",
+                }
+            ]
+        }
+    }
+    nodes = service._extract_plot_nodes(payload)
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert len(node["title"]) <= 25
+    assert len(node["timePoint"]) <= 25
+    assert len(node["trigger"]) <= 49
+    assert len(node["event"]) <= 97
+    assert len(node["objective"]) <= 57
+    assert len(node["conflict"]) <= 57
+    assert len(node["outcome"]) <= 57
+    assert len(node["nextHook"]) <= 49
+
+
+def test_normalize_timeline_time_axis_uses_single_baseline_and_format(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    timeline = {
+        "title": "剧情推进",
+        "nodes": [
+            {"id": "n1", "title": "前史", "timePoint": "三年前", "event": "事故发生"},
+            {"id": "n2", "title": "转折", "timePoint": "当前/今夜", "event": "任务开始"},
+            {"id": "n3", "title": "推进", "timePoint": "次日凌晨", "event": "继续行动"},
+        ],
+    }
+    normalized = service._normalize_timeline_time_axis(timeline)
+    assert normalized["timeBaseline"].startswith("T0=")
+    assert normalized["timeFormat"] == "T±<offset> | 时间描述"
+    points = [node["timePoint"] for node in normalized["nodes"]]
+    assert points[0].startswith("T-")
+    assert points[1].startswith("T+0D")
+    assert points[2].startswith("T+")
+    assert all(" | " in point for point in points)
+
+
+def test_organize_timeline_returns_optional_proposal(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+
+    class DummyTextProvider:
+        def validate(self, config):
+            return True, "ok"
+
+        def generate(self, config, prompt):
+            assert "时间线总编" in prompt
+            return json.dumps(
+                {
+                    "timeBaseline": "T0=当前主线时刻",
+                    "timeFormat": "T±<offset> | 时间描述",
+                    "nodes": [
+                        {
+                            "id": "n-old",
+                            "title": "当前任务开始",
+                            "parentId": "",
+                            "timePoint": "当前/今夜",
+                            "trigger": "接令",
+                            "event": "启动行动",
+                            "objective": "进入主线",
+                            "conflict": "情报不足",
+                            "outcome": "继续推进",
+                            "nextHook": "次日追踪",
+                        },
+                        {
+                            "id": "n-old-2",
+                            "title": "次日追踪",
+                            "parentId": "n-old",
+                            "timePoint": "次日凌晨",
+                            "trigger": "获得新线索",
+                            "event": "前往目标点",
+                            "objective": "确认目标",
+                            "conflict": "遭遇阻击",
+                            "outcome": "保留突破口",
+                            "nextHook": "后续收束",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+    service.providers.text_providers["openai_compatible"] = DummyTextProvider()
+    payload = {
+        "draft": {
+            "timeline": {
+                "title": "剧情推进",
+                "nodes": [
+                    {"id": "n1", "title": "旧节点", "timePoint": "三年前", "event": "旧事件"},
+                    {"id": "n2", "title": "旧节点2", "timePoint": "现在", "event": "旧事件2"},
+                ],
+            }
+        },
+        "settings": {
+            "textProvider": {
+                "provider": "openai_compatible",
+                "baseUrl": "https://example.com/v1",
+                "apiKey": "test-key",
+                "model": "dummy-model",
+            }
+        },
+    }
+    result = service.organize_timeline(payload)
+    assert result["success"] is True
+    data = result["data"]
+    proposal = data["proposalTimeline"]
+    assert proposal["timeBaseline"].startswith("T0=")
+    assert proposal["timeFormat"] == "T±<offset> | 时间描述"
+    assert len(proposal["nodes"]) == 2
+    assert all(" | " in str(node["timePoint"]) for node in proposal["nodes"])
+    assert data["summary"]["nodeCountBefore"] == 2
+    assert data["summary"]["nodeCountAfter"] == 2
 
 
 def test_plot_progression_worldbook_entry_migrates_to_timeline(tmp_path):
@@ -843,3 +1084,488 @@ def test_generate_field_builtin_prefix_fallbacks_to_custom_when_missing(tmp_path
     result = service.generate_field(payload)
     assert result["success"] is True
     assert dummy_provider.last_config["prefixPrompt"] == "这是自定义兜底词"
+
+
+def test_preview_story_segments_prefers_chapter_then_hard_split(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    long_part = "甲" * 20500
+    story_text = f"第1章 雨夜\n{long_part}\n第2章 尾声\n这是第二章内容。"
+
+    result = service.preview_story_segments({"storyText": story_text, "maxCharsPerSegment": 20000})
+    assert result["success"] is True
+    data = result["data"]
+    assert data["segmentationMode"] == "chapter"
+    assert len(data["segments"]) >= 3
+    assert all(segment["charCount"] <= 20000 for segment in data["segments"])
+    assert "第1章" in data["segments"][0]["title"]
+
+
+def test_preview_story_segments_fallback_to_hard_buffer(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    story_text = "这是没有章节标题的长文本。" + ("乙" * 42000)
+
+    result = service.preview_story_segments({"storyText": story_text, "maxCharsPerSegment": 20000})
+    assert result["success"] is True
+    data = result["data"]
+    assert data["segmentationMode"] == "hard_buffer"
+    assert len(data["segments"]) >= 3
+    assert all(segment["charCount"] <= 20000 for segment in data["segments"])
+
+
+def test_preview_story_segments_with_custom_regex(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    story_text = "ACT 1\n第一幕内容\nACT 2\n第二幕内容"
+    result = service.preview_story_segments(
+        {
+            "storyText": story_text,
+            "settings": {
+                "storySegmentation": {
+                    "chapterRegex": r"(?im)^ACT\s+\d+.*$",
+                    "maxCharsPerSegment": 20000,
+                }
+            },
+        }
+    )
+    assert result["success"] is True
+    data = result["data"]
+    assert data["segmentationMode"] == "chapter"
+    assert len(data["segments"]) == 2
+    assert data["chapterRegex"] == r"(?im)^ACT\s+\d+.*$"
+
+
+def test_preview_story_segments_invalid_regex(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    result = service.preview_story_segments(
+        {
+            "storyText": "第1章 示例",
+            "chapterRegex": "(",
+        }
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "validation_error"
+
+
+def test_preview_story_segments_accepts_mistyped_inline_flags(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    story_text = "第一幕：加州军妓\n正文"
+    result = service.preview_story_segments(
+        {
+            "storyText": story_text,
+            "chapterRegex": r"(?:imx)^[ \t]*第[0-9零〇一二三四五六七八九十百千两]+幕[^\n\r]*[ \t]*$",
+        }
+    )
+    assert result["success"] is True
+    assert result["data"]["segmentationMode"] == "chapter"
+    assert len(result["data"]["segments"]) == 1
+    assert result["data"]["chapterRegex"].startswith("(?imx)")
+
+
+def test_preview_story_segments_accepts_mistyped_inline_flags_with_bom_and_spaces(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    story_text = "第一幕：加州军妓\n正文"
+    result = service.preview_story_segments(
+        {
+            "storyText": story_text,
+            "chapterRegex": "\ufeff   (?:imx)^[ \\t]*第[0-9零〇一二三四五六七八九十百千两]+幕[^\\n\\r]*[ \\t]*$",
+        }
+    )
+    assert result["success"] is True
+    assert result["data"]["segmentationMode"] == "chapter"
+    assert len(result["data"]["segments"]) == 1
+    assert "(?imx)" in result["data"]["chapterRegex"]
+
+
+def test_merge_segment_generated_draft_update_existing_policy(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    base_draft = service.save_draft(
+        {
+            "draft": {
+                "card": {"name": "旧卡名", "description": ""},
+                "characters": [
+                    {
+                        "name": "林夏",
+                        "triggerKeywords": ["林夏"],
+                        "appearance": "黑色风衣",
+                        "background": "旧背景",
+                    }
+                ],
+                "worldBook": {
+                    "entries": [
+                        {
+                            "title": "旧城区仓库",
+                            "keywords": ["仓库"],
+                            "content": "旧内容",
+                        }
+                    ]
+                },
+                "timeline": {
+                    "nodes": [
+                        {
+                            "id": "root",
+                            "title": "旧节点",
+                            "event": "旧事件",
+                        }
+                    ]
+                },
+            },
+            "saveAs": False,
+        }
+    )["data"]
+
+    incoming_draft = {
+        "card": {"name": "新卡名", "description": "补充描述"},
+        "characters": [
+            {
+                "name": "林夏",
+                "triggerKeywords": ["林夏", "记者"],
+                "appearance": "红色夹克",
+                "age": "22",
+                "background": "新背景",
+            },
+            {
+                "name": "顾沉",
+                "triggerKeywords": ["顾沉", "刑警"],
+                "background": "重案组刑警",
+            },
+        ],
+        "worldBook": {
+            "entries": [
+                {
+                    "title": "旧城区仓库",
+                    "keywords": ["旧城区", "仓库"],
+                    "content": "新内容",
+                },
+                {
+                    "title": "中央档案馆",
+                    "keywords": ["档案馆"],
+                    "content": "新地点内容",
+                },
+            ]
+        },
+        "timeline": {
+            "nodes": [
+                {"id": "n1", "title": "第一段", "event": "事件1"},
+                {"id": "n2", "parentId": "n1", "title": "第二段", "event": "事件2"},
+            ]
+        },
+    }
+
+    merged, report = service._merge_segment_generated_draft(base_draft, incoming_draft, segment_index=1)
+    assert merged["card"]["name"] == "旧卡名"
+    assert merged["card"]["description"] == "补充描述"
+    assert len(merged["characters"]) == 2
+    lin_xia = next(item for item in merged["characters"] if item["name"] == "林夏")
+    assert lin_xia["age"] == "22"
+    assert lin_xia["appearance"] == "红色夹克"
+    assert "记者" in lin_xia["triggerKeywords"]
+    assert len(merged["worldBook"]["entries"]) == 2
+    warehouse = next(item for item in merged["worldBook"]["entries"] if item["title"] == "旧城区仓库")
+    assert warehouse["content"] == "新内容"
+    assert "旧城区" in warehouse["keywords"]
+    appended_nodes = [node for node in merged["timeline"]["nodes"] if node["id"].startswith("s2_")]
+    assert len(appended_nodes) == 2
+    child = next(node for node in appended_nodes if node["title"] == "第二段")
+    parent = next(node for node in appended_nodes if node["title"] == "第一段")
+    assert child["parentId"] == parent["id"]
+    assert report["newCharactersCount"] == 1
+    assert report["newLocationsCount"] == 1
+    assert report["newTimelineNodesCount"] == 2
+    assert report["ignoredConflictCount"] == 0
+
+
+def test_merge_segment_generated_draft_dedup_character_alias_and_timeline(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    base_draft = {
+        "card": {"name": "测试卡", "description": ""},
+        "characters": [
+            {
+                "name": "琉塞菲亚",
+                "triggerKeywords": ["琉塞菲亚"],
+                "appearance": "旧外观",
+            }
+        ],
+        "timeline": {
+            "nodes": [
+                {
+                    "id": "root",
+                    "title": "开场",
+                    "event": "旧开场",
+                    "parentId": "",
+                }
+            ]
+        },
+    }
+    incoming = {
+        "characters": [
+            {
+                "name": "琉塞菲亚(Luciphira)",
+                "triggerKeywords": ["Luciphira", "琉塞菲亚"],
+                "appearance": "新外观",
+            }
+        ],
+        "timeline": {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "title": "开场",
+                    "event": "新开场",
+                    "parentId": "",
+                },
+                {
+                    "id": "n2",
+                    "title": "冲突",
+                    "event": "爆发冲突",
+                    "parentId": "n1",
+                },
+            ]
+        },
+    }
+
+    merged, report = service._merge_segment_generated_draft(base_draft, incoming, segment_index=2)
+    named_characters = [item for item in merged["characters"] if item["name"]]
+    assert len(named_characters) == 1
+    character = named_characters[0]
+    assert character["name"] == "琉塞菲亚(Luciphira)"
+    assert character["appearance"] == "新外观"
+    assert "Luciphira" in character["triggerKeywords"]
+
+    nodes = merged["timeline"]["nodes"]
+    assert len(nodes) == 2
+    opening = next(item for item in nodes if item["title"] == "开场")
+    conflict = next(item for item in nodes if item["title"] == "冲突")
+    assert opening["event"] == "新开场"
+    assert conflict["parentId"] == opening["id"]
+    assert report["newCharactersCount"] == 0
+    assert report["newTimelineNodesCount"] == 1
+
+
+def test_merge_segment_generated_draft_upserts_openings(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    base_draft = service.save_draft({"draft": {"card": {"name": "测试"}}, "saveAs": False})["data"]
+    incoming_first = {
+        "openings": [
+            {
+                "title": "雨夜初遇",
+                "greeting": "你来了。",
+                "scenario": "暴雨旧城区",
+                "exampleDialogue": "她：跟上我。",
+                "firstMessage": "雨幕里她朝你招手。",
+            }
+        ]
+    }
+    merged_first, _ = service._merge_segment_generated_draft(base_draft, incoming_first, segment_index=0)
+    assert merged_first["openings"]
+    assert merged_first["openings"][0]["title"] == "雨夜初遇"
+    assert merged_first["openings"][0]["firstMessage"] == "雨幕里她朝你招手。"
+
+    incoming_second = {
+        "openings": [
+            {
+                "title": "雨夜初遇",
+                "firstMessage": "雨夜里她把卷宗塞进你手里。",
+            },
+            {
+                "title": "档案馆对峙",
+                "scenario": "地下档案库",
+                "firstMessage": "灯光闪烁，她低声让你别出声。",
+            },
+        ]
+    }
+    merged_second, _ = service._merge_segment_generated_draft(merged_first, incoming_second, segment_index=1)
+    assert len(merged_second["openings"]) == 2
+    first_opening = next(item for item in merged_second["openings"] if item["title"] == "雨夜初遇")
+    second_opening = next(item for item in merged_second["openings"] if item["title"] == "档案馆对峙")
+    assert first_opening["firstMessage"] == "雨夜里她把卷宗塞进你手里。"
+    assert second_opening["firstMessage"] == "灯光闪烁，她低声让你别出声。"
+
+
+def test_merge_segment_generated_draft_does_not_bridge_flashback_root(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    class BridgeJudgeProvider:
+        def generate(self, config, prompt):
+            return json.dumps(
+                {
+                    "decisions": [
+                        {"nodeId": "s4_n1", "bridgeToAnchor": False},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    base_draft = {
+        "timeline": {
+            "nodes": [
+                {
+                    "id": "current",
+                    "title": "峡谷追猎",
+                    "timePoint": "当前（寒夜）",
+                    "event": "正在执行任务",
+                    "parentId": "",
+                }
+            ]
+        }
+    }
+    incoming = {
+        "timeline": {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "title": "沦落与觉醒",
+                    "timePoint": "三年前至数月前",
+                    "event": "回忆过去经历",
+                    "parentId": "",
+                },
+                {
+                    "id": "n2",
+                    "title": "转型清道夫",
+                    "timePoint": "妓院被袭后不久",
+                    "event": "加入清道夫组织",
+                    "parentId": "n1",
+                },
+            ]
+        }
+    }
+    merged, report = service._merge_segment_generated_draft(
+        base_draft,
+        incoming,
+        segment_index=3,
+        provider=BridgeJudgeProvider(),
+        runtime_config={"model": "judge"},
+    )
+    nodes = [item for item in merged["timeline"]["nodes"] if isinstance(item, dict)]
+    flashback_root = next(item for item in nodes if item.get("title") == "沦落与觉醒")
+    flashback_child = next(item for item in nodes if item.get("title") == "转型清道夫")
+    assert flashback_root["parentId"] == ""
+    assert flashback_child["parentId"] == flashback_root["id"]
+    assert report["newTimelineNodesCount"] == 2
+
+
+def test_story_segment_api_flow_preview_then_incremental_updates(tmp_path):
+    service = RolePlayCardService(str(tmp_path))
+    class DummyBridgeJudgeProvider:
+        def validate(self, config):
+            return True, "ok"
+
+        def list_models(self, config):
+            return ["dummy-model"]
+
+        def generate(self, config, prompt):
+            return json.dumps(
+                {
+                    "decisions": [
+                        {"nodeId": "s2_n1", "bridgeToAnchor": True},
+                        {"nodeId": "s2_n2", "bridgeToAnchor": True},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+    service.providers.text_providers["openai_compatible"] = DummyBridgeJudgeProvider()
+    story_text = "第1章 开场\n这是第一段。\n第2章 对峙\n这是第二段。"
+    preview = service.preview_story_segments({"storyText": story_text, "maxCharsPerSegment": 20000})
+    assert preview["success"] is True
+    segments = preview["data"]["segments"]
+    assert len(segments) >= 2
+
+    generated_drafts = [
+        {
+            "card": {"name": "分段卡", "description": ""},
+            "characters": [{"name": "林夏", "triggerKeywords": ["林夏"], "background": "记者"}],
+            "worldBook": {"entries": [{"title": "旧城区仓库", "keywords": ["仓库"], "content": "仓库设定"}]},
+            "timeline": {"nodes": [{"id": "n1", "title": "开场节点", "event": "开场事件"}]},
+        },
+        {
+            "card": {"name": "分段卡新名", "description": "补充描述"},
+            "characters": [
+                {"name": "林夏", "triggerKeywords": ["林夏", "调查员"], "background": "新背景"},
+                {"name": "顾沉", "triggerKeywords": ["顾沉"], "background": "刑警"},
+            ],
+            "worldBook": {
+                "entries": [
+                    {"title": "旧城区仓库", "keywords": ["旧城区"], "content": "仓库新设定"},
+                    {"title": "中央档案馆", "keywords": ["档案馆"], "content": "档案馆设定"},
+                ]
+            },
+            "timeline": {
+                "nodes": [
+                    {"id": "n1", "title": "中段节点", "event": "中段事件"},
+                    {"id": "n2", "parentId": "n1", "title": "后段节点", "event": "后段事件"},
+                ]
+            },
+        },
+    ]
+
+    call_count = {"value": 0}
+
+    def fake_generate_card_from_story(payload):
+        idx = call_count["value"]
+        call_count["value"] += 1
+        return {
+            "success": True,
+            "error_code": None,
+            "message": "ok",
+            "data": {
+                "draft": generated_drafts[idx],
+                "raw": "{}",
+            },
+        }
+
+    service.generate_card_from_story = fake_generate_card_from_story  # type: ignore[method-assign]
+
+    base_draft = service.save_draft({"draft": {"card": {"name": ""}}, "saveAs": False})["data"]
+    base_draft["storyGenerationState"] = {
+        "totalSegments": len(segments),
+        "currentSegmentIndex": 0,
+        "segmentationMode": preview["data"]["segmentationMode"],
+    }
+
+    first = service.generate_card_from_story_segment(
+        {
+            "draft": base_draft,
+            "segmentText": story_text[segments[0]["start"] : segments[0]["end"]],
+            "segmentIndex": 0,
+            "totalSegments": len(segments),
+            "settings": {
+                "textProvider": {
+                    "provider": "openai_compatible",
+                    "baseUrl": "https://example.com/v1",
+                    "apiKey": "test-key",
+                    "model": "dummy-model",
+                }
+            },
+        }
+    )
+    assert first["success"] is True
+    first_draft = first["data"]["draft"]
+    assert first_draft["storyGenerationState"]["currentSegmentIndex"] == 1
+    assert first["data"]["segmentReport"]["newCharactersCount"] == 1
+
+    second = service.generate_card_from_story_segment(
+        {
+            "draft": first_draft,
+            "segmentText": story_text[segments[1]["start"] : segments[1]["end"]],
+            "segmentIndex": 1,
+            "totalSegments": len(segments),
+            "settings": {
+                "textProvider": {
+                    "provider": "openai_compatible",
+                    "baseUrl": "https://example.com/v1",
+                    "apiKey": "test-key",
+                    "model": "dummy-model",
+                }
+            },
+        }
+    )
+    assert second["success"] is True
+    second_draft = second["data"]["draft"]
+    assert second_draft["storyGenerationState"]["currentSegmentIndex"] == 2
+    named_characters = [item for item in second_draft["characters"] if item["name"]]
+    assert len(named_characters) == 2
+    assert len(second_draft["worldBook"]["entries"]) == 2
+    assert second["data"]["segmentReport"]["newTimelineNodesCount"] == 2
+    timeline_nodes = [item for item in second_draft["timeline"]["nodes"] if isinstance(item, dict)]
+    opening = next(item for item in timeline_nodes if item.get("title") == "开场节点")
+    mid = next(item for item in timeline_nodes if item.get("title") == "中段节点")
+    late = next(item for item in timeline_nodes if item.get("title") == "后段节点")
+    assert mid["parentId"] == opening["id"]
+    assert late["parentId"] == mid["id"]

@@ -25,9 +25,15 @@ export interface ProviderConfig {
   extraHeaders?: Record<string, string>;
 }
 
+export interface StorySegmentationSettings {
+  chapterRegex: string;
+  maxCharsPerSegment: number;
+}
+
 export interface AppSettings {
   textProvider: ProviderConfig;
   imageProvider: ProviderConfig;
+  storySegmentation: StorySegmentationSettings;
   exportDirectory: string;
   recentDirectory: string;
 }
@@ -97,6 +103,8 @@ export interface TimelineInfo {
   enabled: boolean;
   triggerMode: 'always';
   keywords: string[];
+  timeBaseline: string;
+  timeFormat: string;
   nodes: TimelineNode[];
 }
 
@@ -107,6 +115,12 @@ export interface IllustrationInfo {
   promptSnapshot: string;
   negativePrompt: string;
   stylePrompt: string;
+}
+
+export interface StoryGenerationState {
+  totalSegments: number;
+  currentSegmentIndex: number;
+  segmentationMode: 'chapter' | 'hard_buffer';
 }
 
 export interface CharacterDraft {
@@ -124,6 +138,7 @@ export interface CharacterDraft {
   };
   timeline: TimelineInfo;
   illustration: IllustrationInfo;
+  storyGenerationState?: StoryGenerationState;
 }
 
 export interface DraftSummary {
@@ -179,6 +194,64 @@ export interface GenerateCardFromStoryRequest {
 export interface GenerateCardFromStoryResponse {
   draft: CharacterDraft;
   raw: string;
+}
+
+export interface SegmentInfo {
+  segmentIndex: number;
+  title: string;
+  start: number;
+  end: number;
+  charCount: number;
+  preview: string;
+}
+
+export interface SegmentReport {
+  newCharactersCount: number;
+  newLocationsCount: number;
+  newTimelineNodesCount: number;
+  ignoredConflictCount: number;
+}
+
+export interface StorySegmentsPreviewRequest {
+  storyText: string;
+  maxCharsPerSegment?: number;
+  chapterRegex?: string;
+}
+
+export interface StorySegmentsPreviewResponse {
+  segmentationMode: 'chapter' | 'hard_buffer';
+  maxCharsPerSegment: number;
+  chapterRegex: string;
+  segments: SegmentInfo[];
+}
+
+export interface GenerateCardFromStorySegmentRequest {
+  draft: CharacterDraft;
+  segmentText: string;
+  segmentIndex: number;
+  totalSegments: number;
+  settings?: AppSettings;
+}
+
+export interface GenerateCardFromStorySegmentResponse {
+  draft: CharacterDraft;
+  segmentReport: SegmentReport;
+}
+
+export interface OrganizeTimelineRequest {
+  draft: CharacterDraft;
+  settings?: AppSettings;
+}
+
+export interface OrganizeTimelineResponse {
+  proposalTimeline: TimelineInfo;
+  summary: {
+    nodeCountBefore: number;
+    nodeCountAfter: number;
+    rootCountAfter: number;
+    baseline: string;
+    format: string;
+  };
 }
 
 export interface ExportCharacterCardRequest {

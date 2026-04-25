@@ -8,10 +8,15 @@ import type {
   CharacterDraft,
   DraftSummary,
   ExportCharacterCardResponse,
+  GenerateCardFromStorySegmentResponse,
   GenerateCardFromStoryResponse,
   GenerateFieldRequest,
   ImportCharacterCardResponse,
+  OrganizeTimelineResponse,
   OpeningInfo,
+  SegmentInfo,
+  SegmentReport,
+  StorySegmentsPreviewResponse,
   TimelineInfo,
   TimelineNode,
   ProviderConfig,
@@ -23,11 +28,21 @@ import type {
 
 const API_BASE = '/api';
 const SETTINGS_COOKIE_KEY = 'roleplaycard_settings';
+const DEFAULT_CHAPTER_REGEX =
+  '(?imx)^[ \\t]*(第[0-9零〇一二三四五六七八九十百千两]+[章节卷回篇集部幕][^\\n\\r]*|卷[0-9零〇一二三四五六七八九十百千两]+[^\\n\\r]*|幕[0-9零〇一二三四五六七八九十百千两]+[^\\n\\r]*|chapter[ \\t]+[0-9ivxlcdm]+[^\\n\\r]*|volume[ \\t]+[0-9ivxlcdm]+[^\\n\\r]*)[ \\t]*$';
+
+function createStorySegmentationSettings(): AppSettings['storySegmentation'] {
+  return {
+    chapterRegex: DEFAULT_CHAPTER_REGEX,
+    maxCharsPerSegment: 20000,
+  };
+}
 
 function buildDefaultSettings(): AppSettings {
   return {
     textProvider: createProviderConfig(),
     imageProvider: createProviderConfig(),
+    storySegmentation: createStorySegmentationSettings(),
     exportDirectory: '',
     recentDirectory: '',
   };
@@ -52,6 +67,10 @@ function mergeSettings(defaults: AppSettings, incoming: Partial<AppSettings> | n
       ...defaults.imageProvider,
       ...(incoming.imageProvider ?? {}),
       provider: normalizeProvider(incoming.imageProvider?.provider),
+    },
+    storySegmentation: {
+      ...defaults.storySegmentation,
+      ...(incoming.storySegmentation ?? {}),
     },
   };
 }
@@ -134,6 +153,22 @@ function downloadBase64Png(filename: string, imageBase64: string) {
 }
 
 const nowIso = () => new Date().toISOString();
+const createId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  const ts = Date.now().toString(16);
+  const rand = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16);
+  return `${ts}-${rand}`;
+};
 const splitKeywords = (text: string) =>
   text
     .split(/[,，\n]/)
@@ -161,7 +196,7 @@ const createAdvanced = (): WorldBookAdvancedOptions => ({
 });
 
 const createCharacter = (): CharacterDefinition => ({
-  id: crypto.randomUUID(),
+  id: createId(),
   enabled: true,
   triggerMode: 'keyword',
   isUserRole: false,
@@ -177,7 +212,7 @@ const createCharacter = (): CharacterDefinition => ({
 });
 
 const createWorldEntry = (): WorldBookEntry => ({
-  id: crypto.randomUUID(),
+  id: createId(),
   enabled: true,
   triggerMode: 'keyword',
   title: '',
@@ -187,7 +222,7 @@ const createWorldEntry = (): WorldBookEntry => ({
 });
 
 const createOpening = (index = 0): OpeningInfo => ({
-  id: crypto.randomUUID(),
+  id: createId(),
   title: `首屏 ${index + 1}`,
   greeting: '',
   scenario: '',
@@ -196,7 +231,7 @@ const createOpening = (index = 0): OpeningInfo => ({
 });
 
 const createTimelineNode = (parentId = ''): TimelineNode => ({
-  id: crypto.randomUUID(),
+  id: createId(),
   parentId,
   title: '',
   timePoint: '',
@@ -213,8 +248,40 @@ const createTimeline = (): TimelineInfo => ({
   enabled: false,
   triggerMode: 'always',
   keywords: ['剧情推进', '主线节点', '剧情走向'],
+  timeBaseline: 'T0=当前主线时刻',
+  timeFormat: 'T±<offset> | 时间描述',
   nodes: [],
 });
+
+type StoryGenerationStateDraft = NonNullable<CharacterDraft['storyGenerationState']>;
+
+const createStoryGenerationState = (): StoryGenerationStateDraft => ({
+  totalSegments: 0,
+  currentSegmentIndex: 0,
+  segmentationMode: 'hard_buffer',
+});
+
+function ensureStoryGenerationState(value: CharacterDraft): CharacterDraft['storyGenerationState'] {
+  const incoming = value.storyGenerationState;
+  if (!incoming || typeof incoming !== 'object') {
+    return undefined;
+  }
+  const totalSegments = Number.isFinite(Number(incoming.totalSegments))
+    ? Math.max(0, Number(incoming.totalSegments))
+    : 0;
+  const currentSegmentIndex = Number.isFinite(Number(incoming.currentSegmentIndex))
+    ? Math.max(0, Number(incoming.currentSegmentIndex))
+    : 0;
+  const segmentationMode =
+    incoming.segmentationMode === 'chapter' || incoming.segmentationMode === 'hard_buffer'
+      ? incoming.segmentationMode
+      : 'hard_buffer';
+  return {
+    totalSegments,
+    currentSegmentIndex: Math.min(currentSegmentIndex, totalSegments),
+    segmentationMode,
+  };
+}
 
 function isBlankCharacter(character: CharacterDefinition): boolean {
   return !(
@@ -248,7 +315,7 @@ function ensureOpenings(value: CharacterDraft): OpeningInfo[] {
     return value.openings.map((item, index) => ({
       ...createOpening(index),
       ...item,
-      id: item.id || crypto.randomUUID(),
+      id: item.id || createId(),
       title: item.title?.trim() ? item.title : `首屏 ${index + 1}`,
     }));
   }
@@ -257,7 +324,7 @@ function ensureOpenings(value: CharacterDraft): OpeningInfo[] {
       {
         ...createOpening(0),
         ...value.opening,
-        id: value.opening.id || crypto.randomUUID(),
+        id: value.opening.id || createId(),
         title: value.opening.title?.trim() ? value.opening.title : '首屏 1',
       },
     ];
@@ -294,7 +361,7 @@ function parseTimelineNodesFromWorldBookContent(content: string): TimelineNode[]
   return rawNodes
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
     .map((item) => ({
-      id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
+      id: typeof item.id === 'string' && item.id ? item.id : createId(),
       parentId: typeof item.parentId === 'string' ? item.parentId : '',
       title: String(item.title ?? item.name ?? item.stage ?? ''),
       timePoint: String(item.timePoint ?? item.time ?? item.timeline ?? ''),
@@ -327,7 +394,7 @@ function ensureTimeline(value: CharacterDraft): TimelineInfo {
   const normalizedNodes = timeline.nodes.map((item) => ({
     ...createTimelineNode(''),
     ...item,
-    id: item.id || crypto.randomUUID(),
+    id: item.id || createId(),
     parentId: item.parentId || '',
   }));
   const validIds = new Set(normalizedNodes.map((item) => item.id));
@@ -342,11 +409,44 @@ function ensureTimeline(value: CharacterDraft): TimelineInfo {
     timeline.keywords = ['剧情推进', '主线节点', '剧情走向'];
   }
   timeline.title = timeline.title || '剧情推进';
+  timeline.timeBaseline = String(timeline.timeBaseline || 'T0=当前主线时刻');
+  timeline.timeFormat = String(timeline.timeFormat || 'T±<offset> | 时间描述');
+  return timeline;
+}
+
+function normalizeTimelineInfo(value: Partial<TimelineInfo> | null | undefined): TimelineInfo {
+  const timeline = {
+    ...createTimeline(),
+    ...(value ?? {}),
+    triggerMode: 'always' as const,
+  };
+  if (!Array.isArray(timeline.nodes)) {
+    timeline.nodes = [];
+  }
+  timeline.nodes = timeline.nodes.map((item) => ({
+    ...createTimelineNode(''),
+    ...item,
+    id: item.id || createId(),
+    parentId: item.parentId || '',
+  }));
+  const validIds = new Set(timeline.nodes.map((item) => item.id));
+  timeline.nodes.forEach((node) => {
+    if (!node.parentId || node.parentId === node.id || !validIds.has(node.parentId)) {
+      node.parentId = '';
+    }
+  });
+  timeline.keywords = Array.isArray(timeline.keywords) ? timeline.keywords.filter(Boolean) : [];
+  if (timeline.keywords.length === 0) {
+    timeline.keywords = ['剧情推进', '主线节点', '剧情走向'];
+  }
+  timeline.title = timeline.title || '剧情推进';
+  timeline.timeBaseline = String(timeline.timeBaseline || 'T0=当前主线时刻');
+  timeline.timeFormat = String(timeline.timeFormat || 'T±<offset> | 时间描述');
   return timeline;
 }
 
 const createDraft = (): CharacterDraft => ({
-  id: crypto.randomUUID(),
+  id: createId(),
   version: 2,
   sourceType: 'roleplaycard',
   createdAt: nowIso(),
@@ -369,11 +469,13 @@ const createDraft = (): CharacterDraft => ({
     negativePrompt: '',
     stylePrompt: '',
   },
+  storyGenerationState: undefined,
 });
 
 const settings = reactive<AppSettings>({
   textProvider: createProviderConfig(),
   imageProvider: createProviderConfig(),
+  storySegmentation: createStorySegmentationSettings(),
   exportDirectory: '',
   recentDirectory: '',
 });
@@ -389,6 +491,8 @@ const imagePromptBusy = ref(false);
 const imageGenerateBusy = ref(false);
 const autosaveSaving = ref(false);
 const cardGenerateBusy = ref(false);
+const segmentPreviewBusy = ref(false);
+const segmentGenerateBusy = ref(false);
 const testingTextProvider = ref(false);
 const testingImageProvider = ref(false);
 const loadingBuiltinPrefixPrompts = ref(false);
@@ -397,10 +501,18 @@ const imageModelOptions = ref<string[]>([]);
 const builtinPrefixPromptDir = ref('');
 const builtinPrefixPromptOptions = ref<BuiltinPrefixPromptOption[]>([]);
 const cardGenerateInput = ref('');
+const storySegments = ref<SegmentInfo[]>([]);
+const storySegmentationMode = ref<'chapter' | 'hard_buffer'>('hard_buffer');
+const currentSegmentIndex = ref(0);
+const latestSegmentReport = ref<SegmentReport | null>(null);
 const selectedCharacterIndex = ref<number | null>(0);
 const selectedOpeningIndex = ref<number | null>(0);
 const selectedWorldEntryIndex = ref<number | null>(0);
 const selectedTimelineNodeId = ref<string | null>(null);
+const timelineOrganizeBusy = ref(false);
+const timelineOrganizeProposal = ref<TimelineInfo | null>(null);
+const timelineDragNodeId = ref<string | null>(null);
+const timelineDragOverNodeId = ref<string | null>(null);
 const autosaveEnabled = ref(true);
 const importInputRef = ref<HTMLInputElement | null>(null);
 const imageInputRef = ref<HTMLInputElement | null>(null);
@@ -427,7 +539,37 @@ const exportReady = computed(
 );
 const isExternalCard = computed(() => inferSourceType(draft) === 'external');
 const aiBusy = computed(() =>
-  Boolean(aiBusyField.value || imagePromptBusy.value || imageGenerateBusy.value || cardGenerateBusy.value),
+  Boolean(
+    aiBusyField.value ||
+      imagePromptBusy.value ||
+      imageGenerateBusy.value ||
+      cardGenerateBusy.value ||
+      segmentPreviewBusy.value ||
+      segmentGenerateBusy.value,
+  ),
+);
+const maxCharsPerSegment = computed({
+  get: () => settings.storySegmentation.maxCharsPerSegment,
+  set: (value: number) => {
+    const normalized = Math.max(500, Math.floor(Number(value) || 20000));
+    settings.storySegmentation.maxCharsPerSegment = normalized;
+  },
+});
+const segmentGenerationState = computed<StoryGenerationStateDraft>(() => {
+  const state = ensureStoryGenerationState(draft);
+  if (!state) {
+    return createStoryGenerationState();
+  }
+  return {
+    totalSegments: state.totalSegments,
+    currentSegmentIndex: state.currentSegmentIndex,
+    segmentationMode: state.segmentationMode,
+  };
+});
+const completedSegments = computed(() => segmentGenerationState.value.currentSegmentIndex);
+const totalSegments = computed(() => segmentGenerationState.value.totalSegments);
+const allSegmentsCompleted = computed(
+  () => totalSegments.value > 0 && completedSegments.value >= totalSegments.value,
 );
 const validationReport = computed(() => {
   const items: string[] = [];
@@ -437,8 +579,8 @@ const validationReport = computed(() => {
   return items;
 });
 
-const timelineRows = computed(() => {
-  const nodes = draft.timeline.nodes ?? [];
+function buildTimelineRows(nodesInput: TimelineNode[]): Array<{ node: TimelineNode; depth: number }> {
+  const nodes = Array.isArray(nodesInput) ? nodesInput : [];
   const byParent = new Map<string, TimelineNode[]>();
   const allIds = new Set(nodes.map((item) => item.id));
   for (const node of nodes) {
@@ -465,7 +607,10 @@ const timelineRows = computed(() => {
     walk(node.id, 1);
   }
   return rows;
-});
+}
+
+const timelineRows = computed(() => buildTimelineRows(draft.timeline.nodes ?? []));
+const timelineProposalRows = computed(() => buildTimelineRows(timelineOrganizeProposal.value?.nodes ?? []));
 
 const timelineGraphNodeWidth = 172;
 const timelineGraphNodeHeight = 58;
@@ -542,6 +687,11 @@ const timelineGraph = computed(() => {
   };
 });
 
+const timelineRootCount = computed(() => draft.timeline.nodes.filter((node) => !node.parentId).length);
+const timelineProposalRootCount = computed(
+  () => (timelineOrganizeProposal.value?.nodes ?? []).filter((node) => !node.parentId).length,
+);
+
 function timelineParentTitle(node: TimelineNode): string {
   if (!node.parentId) {
     return '';
@@ -551,6 +701,10 @@ function timelineParentTitle(node: TimelineNode): string {
     return '未命名父节点';
   }
   return parent.title || parent.timePoint || '未命名父节点';
+}
+
+function clearTimelineOrganizeProposal() {
+  timelineOrganizeProposal.value = null;
 }
 
 let autosaveTimer: number | null = null;
@@ -582,6 +736,20 @@ function normalizeTextPrefixPromptSettings() {
   }
 }
 
+function normalizeStorySegmentationSettings() {
+  if (!settings.storySegmentation || typeof settings.storySegmentation !== 'object') {
+    settings.storySegmentation = createStorySegmentationSettings();
+    return;
+  }
+  if (typeof settings.storySegmentation.chapterRegex !== 'string' || !settings.storySegmentation.chapterRegex.trim()) {
+    settings.storySegmentation.chapterRegex = DEFAULT_CHAPTER_REGEX;
+  }
+  const rawMaxChars = Number(settings.storySegmentation.maxCharsPerSegment);
+  settings.storySegmentation.maxCharsPerSegment = Number.isFinite(rawMaxChars)
+    ? Math.max(500, Math.floor(rawMaxChars))
+    : 20000;
+}
+
 function ensureApiConfigured(kind: 'text' | 'image'): boolean {
   const target = kind === 'text' ? settings.textProvider : settings.imageProvider;
   if (isProviderConfigured(target)) {
@@ -605,6 +773,7 @@ async function refreshDraftList() {
 async function loadSettings() {
   Object.assign(settings, loadSettingsFromCookie());
   normalizeTextPrefixPromptSettings();
+  normalizeStorySegmentationSettings();
 }
 
 async function saveSettings(message = '设置已保存到浏览器 Cookie') {
@@ -618,6 +787,11 @@ async function saveTextSettings() {
 
 async function saveImageSettings() {
   await saveSettings('图像设置已保存到浏览器 Cookie');
+}
+
+async function saveSegmentationSettings() {
+  normalizeStorySegmentationSettings();
+  await saveSettings('分段设置已保存到浏览器 Cookie');
 }
 
 type ProviderTestResponse = { provider: string; detail: string; models: string[] };
@@ -723,12 +897,22 @@ function syncSelectionIndexes() {
   }
 }
 
+function syncStoryGenerationStateFromDraft() {
+  const state = ensureStoryGenerationState(draft);
+  if (!state) {
+    currentSegmentIndex.value = 0;
+    return;
+  }
+  storySegmentationMode.value = state.segmentationMode;
+  currentSegmentIndex.value = Math.min(state.currentSegmentIndex, Math.max(0, storySegments.value.length - 1));
+}
+
 function applyDraftPayload(payload: CharacterDraft) {
   const normalizedCharacters = (Array.isArray(payload.characters) ? payload.characters : [])
     .map((item) => ({
       ...createCharacter(),
       ...item,
-      id: item.id || crypto.randomUUID(),
+      id: item.id || createId(),
       triggerKeywords: Array.isArray(item.triggerKeywords) ? item.triggerKeywords.filter(Boolean) : [],
       advanced: {
         ...createAdvanced(),
@@ -750,13 +934,16 @@ function applyDraftPayload(payload: CharacterDraft) {
     openings: ensureOpenings(payload),
     characters: normalizedCharacters,
     timeline: ensureTimeline(payload),
+    storyGenerationState: ensureStoryGenerationState(payload),
     worldBook: {
       entries: (payload.worldBook?.entries ?? []).filter((entry) => entry.title !== '剧情推进'),
     },
   };
   Object.assign(draft, normalized);
   draft.sourceType = inferSourceType(draft);
+  clearTimelineOrganizeProposal();
   syncSelectionIndexes();
+  syncStoryGenerationStateFromDraft();
 }
 
 async function openDraft(draftId: string) {
@@ -765,6 +952,8 @@ async function openDraft(draftId: string) {
     setStatus(`打开草稿失败: ${result.message}`);
     return;
   }
+  storySegments.value = [];
+  latestSegmentReport.value = null;
   applyDraftPayload(result.data);
   selectedTimelineNodeId.value = result.data.timeline?.nodes?.[0]?.id ?? null;
   setStatus(`已打开草稿 ${result.data.card.name || result.data.id}`);
@@ -831,6 +1020,7 @@ async function clearAllStoredData() {
     return;
   }
   applyDraftPayload(createDraft());
+  resetSegmentProgressState();
   await refreshDraftList();
   Object.assign(settings, buildDefaultSettings());
   setCookieValue(SETTINGS_COOKIE_KEY, '', 0);
@@ -901,6 +1091,148 @@ async function requestAIField(field: string, mode: GenerateFieldRequest['mode'],
   return result.data.result;
 }
 
+function updateStoryGenerationState(
+  total: number,
+  current: number,
+  mode: 'chapter' | 'hard_buffer',
+) {
+  draft.storyGenerationState = {
+    totalSegments: Math.max(0, total),
+    currentSegmentIndex: Math.max(0, Math.min(current, total)),
+    segmentationMode: mode,
+  };
+}
+
+function resetSegmentProgressState() {
+  draft.storyGenerationState = undefined;
+  storySegments.value = [];
+  currentSegmentIndex.value = 0;
+  latestSegmentReport.value = null;
+}
+
+function segmentTextByInfo(segment: SegmentInfo): string {
+  const text = cardGenerateInput.value;
+  const start = Math.max(0, segment.start);
+  const end = Math.max(start, segment.end);
+  return text.slice(start, end);
+}
+
+function chooseSegment(index: number) {
+  if (index < 0 || index >= storySegments.value.length) {
+    return;
+  }
+  currentSegmentIndex.value = index;
+}
+
+async function previewStorySegments() {
+  if (!cardGenerateInput.value.trim()) {
+    setStatus('请先输入长篇小说全文，再生成分段预览。');
+    return;
+  }
+  const normalizedMaxChars = Math.max(500, Math.floor(Number(maxCharsPerSegment.value) || 20000));
+  settings.storySegmentation.maxCharsPerSegment = normalizedMaxChars;
+  segmentPreviewBusy.value = true;
+  latestSegmentReport.value = null;
+  setStatus('正在生成分段预览...');
+  try {
+    const result = await apiRequest<StorySegmentsPreviewResponse>('/ai/story-segments/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        storyText: cardGenerateInput.value,
+        maxCharsPerSegment: normalizedMaxChars,
+        chapterRegex: settings.storySegmentation.chapterRegex,
+        settings: clonePlain(settings),
+      }),
+    });
+    if (!result.success || !result.data) {
+      setStatus(`分段预览失败: ${result.message}`);
+      return;
+    }
+    storySegments.value = result.data.segments ?? [];
+    storySegmentationMode.value = result.data.segmentationMode;
+    settings.storySegmentation.chapterRegex = result.data.chapterRegex || settings.storySegmentation.chapterRegex;
+    settings.storySegmentation.maxCharsPerSegment = result.data.maxCharsPerSegment;
+    const restoredIndex = Math.min(
+      segmentGenerationState.value.currentSegmentIndex,
+      Math.max(0, storySegments.value.length - 1),
+    );
+    currentSegmentIndex.value = restoredIndex;
+    updateStoryGenerationState(storySegments.value.length, segmentGenerationState.value.currentSegmentIndex, result.data.segmentationMode);
+    setStatus(
+      `分段预览完成：共 ${storySegments.value.length} 段，切分策略 ${result.data.segmentationMode === 'chapter' ? '章节优先' : '硬切分'}。`,
+    );
+  } finally {
+    segmentPreviewBusy.value = false;
+  }
+}
+
+async function generateStorySegment(index: number) {
+  if (!ensureApiConfigured('text')) return;
+  if (!storySegments.value.length) {
+    setStatus('请先生成分段预览。');
+    return;
+  }
+  const segment = storySegments.value[index];
+  if (!segment) {
+    setStatus('当前段不存在，请重新生成分段预览。');
+    return;
+  }
+  const segmentText = segmentTextByInfo(segment);
+  if (!segmentText.trim()) {
+    setStatus('当前段文本为空，请检查原文后重试。');
+    return;
+  }
+  segmentGenerateBusy.value = true;
+  setStatus(`正在增量生成第 ${index + 1} 段...`);
+  try {
+    const result = await apiRequest<GenerateCardFromStorySegmentResponse>('/ai/card-from-story-segment', {
+      method: 'POST',
+      body: JSON.stringify({
+        draft: clonePlain(draft),
+        segmentText,
+        segmentIndex: index,
+        totalSegments: storySegments.value.length,
+        settings: clonePlain(settings),
+      }),
+    });
+    if (!result.success || !result.data) {
+      setStatus(`分段增量生成失败: ${result.message}`);
+      return;
+    }
+    latestSegmentReport.value = result.data.segmentReport;
+    applyDraftPayload(result.data.draft);
+    const state = ensureStoryGenerationState(result.data.draft) ?? createStoryGenerationState();
+    currentSegmentIndex.value = Math.min(state.currentSegmentIndex, Math.max(0, storySegments.value.length - 1));
+    setStatus(
+      `第 ${index + 1} 段增量完成：新增角色 ${result.data.segmentReport.newCharactersCount}，新增地点 ${result.data.segmentReport.newLocationsCount}。`,
+    );
+  } finally {
+    segmentGenerateBusy.value = false;
+  }
+}
+
+async function generateCurrentSegment() {
+  if (!storySegments.value.length) {
+    setStatus('请先生成分段预览。');
+    return;
+  }
+  await generateStorySegment(currentSegmentIndex.value);
+}
+
+async function generateNextSegment() {
+  if (!storySegments.value.length) {
+    setStatus('请先生成分段预览。');
+    return;
+  }
+  if (allSegmentsCompleted.value) {
+    setStatus('所有分段已生成完成。');
+    return;
+  }
+  const nextIndex = Math.min(segmentGenerationState.value.currentSegmentIndex, storySegments.value.length - 1);
+  currentSegmentIndex.value = nextIndex;
+  await generateStorySegment(nextIndex);
+}
+
 async function generateCardFromInput() {
   if (!ensureApiConfigured('text')) return;
   if (!cardGenerateInput.value.trim()) {
@@ -929,6 +1261,7 @@ async function generateCardFromInput() {
     selectedTimelineNodeId.value = result.data.draft.timeline?.nodes?.[0]?.id ?? null;
     const characterCount = result.data.draft.characters.length;
     const locationCount = result.data.draft.worldBook.entries.length;
+    resetSegmentProgressState();
     setStatus(`角色卡一键生成完成：角色 ${characterCount} 个，地点条目 ${locationCount} 条。`);
   } finally {
     cardGenerateBusy.value = false;
@@ -1035,30 +1368,33 @@ function setWorldEntryKeywords(index: number, text: string) {
 
 function setTimelineKeywords(text: string) {
   draft.timeline.keywords = splitKeywords(text);
+  clearTimelineOrganizeProposal();
 }
 
 function addTimelineRootNode() {
   const node = createTimelineNode('');
   draft.timeline.nodes.push(node);
   selectedTimelineNodeId.value = node.id;
+  clearTimelineOrganizeProposal();
 }
 
 function addTimelineChildNode(parentId: string) {
   const node = createTimelineNode(parentId);
   draft.timeline.nodes.push(node);
   selectedTimelineNodeId.value = node.id;
+  clearTimelineOrganizeProposal();
 }
 
 function selectTimelineNode(nodeId: string) {
   selectedTimelineNodeId.value = selectedTimelineNodeId.value === nodeId ? null : nodeId;
 }
 
-function collectTimelineDescendantIds(nodeId: string): Set<string> {
+function collectTimelineDescendantIds(nodeId: string, nodesSnapshot: TimelineNode[] = draft.timeline.nodes): Set<string> {
   const result = new Set<string>();
   const stack = [nodeId];
   while (stack.length > 0) {
     const current = stack.pop() as string;
-    for (const node of draft.timeline.nodes) {
+    for (const node of nodesSnapshot) {
       if (node.parentId !== current || result.has(node.id)) continue;
       result.add(node.id);
       stack.push(node.id);
@@ -1073,36 +1409,181 @@ function timelineParentCandidates(nodeId: string): TimelineNode[] {
   return draft.timeline.nodes.filter((node) => !excluded.has(node.id));
 }
 
-function setTimelineNodeParent(nodeId: string, parentId: string) {
-  const node = draft.timeline.nodes.find((item) => item.id === nodeId);
-  if (!node) return;
+function collectTimelineSubtreeNodes(nodeId: string, nodesSnapshot: TimelineNode[] = draft.timeline.nodes): TimelineNode[] {
+  const ids = collectTimelineDescendantIds(nodeId, nodesSnapshot);
+  ids.add(nodeId);
+  return nodesSnapshot.filter((node) => ids.has(node.id));
+}
+
+function subtreeLastIndex(nodeId: string, nodesSnapshot: TimelineNode[]): number {
+  const ids = collectTimelineDescendantIds(nodeId, nodesSnapshot);
+  ids.add(nodeId);
+  let last = -1;
+  nodesSnapshot.forEach((node, index) => {
+    if (ids.has(node.id)) {
+      last = index;
+    }
+  });
+  return last;
+}
+
+function moveTimelineSubtree(nodeId: string, parentId: string): boolean {
+  const source = draft.timeline.nodes.find((item) => item.id === nodeId);
+  if (!source) return false;
   const nextParent = parentId.trim();
-  if (!nextParent) {
-    node.parentId = '';
-    return;
-  }
   const candidates = timelineParentCandidates(nodeId);
-  if (candidates.some((item) => item.id === nextParent)) {
-    node.parentId = nextParent;
+  if (nextParent && !candidates.some((item) => item.id === nextParent)) {
+    return false;
+  }
+  const snapshot = [...draft.timeline.nodes];
+  const moving = collectTimelineSubtreeNodes(nodeId, snapshot);
+  if (moving.length === 0) {
+    return false;
+  }
+  const movingIds = new Set(moving.map((item) => item.id));
+  const remaining = snapshot.filter((item) => !movingIds.has(item.id));
+  moving[0].parentId = nextParent;
+
+  let insertAt = remaining.length;
+  if (nextParent) {
+    const lastIndex = subtreeLastIndex(nextParent, remaining);
+    insertAt = lastIndex >= 0 ? lastIndex + 1 : remaining.length;
+  }
+  draft.timeline.nodes = [
+    ...remaining.slice(0, insertAt),
+    ...moving,
+    ...remaining.slice(insertAt),
+  ];
+  clearTimelineOrganizeProposal();
+  return true;
+}
+
+function setTimelineNodeParent(nodeId: string, parentId: string) {
+  const applied = moveTimelineSubtree(nodeId, parentId);
+  if (!applied && !parentId.trim()) {
+    const node = draft.timeline.nodes.find((item) => item.id === nodeId);
+    if (node) {
+      node.parentId = '';
+      clearTimelineOrganizeProposal();
+    }
   }
 }
 
 function moveTimelineNode(nodeId: string, direction: -1 | 1) {
   const index = draft.timeline.nodes.findIndex((item) => item.id === nodeId);
   if (index < 0) return;
-  const target = index + direction;
-  if (target < 0 || target >= draft.timeline.nodes.length) return;
-  const [current] = draft.timeline.nodes.splice(index, 1);
-  draft.timeline.nodes.splice(target, 0, current);
+  const subtree = collectTimelineSubtreeNodes(nodeId);
+  const subtreeIds = new Set(subtree.map((item) => item.id));
+  const remaining = draft.timeline.nodes.filter((item) => !subtreeIds.has(item.id));
+  const currentStart = draft.timeline.nodes.findIndex((item) => item.id === subtree[0]?.id);
+  const targetIndexRaw = currentStart + direction;
+  let insertAt = Math.max(0, Math.min(remaining.length, targetIndexRaw));
+  if (direction > 0 && insertAt < remaining.length) {
+    insertAt += 1;
+  }
+  draft.timeline.nodes = [
+    ...remaining.slice(0, insertAt),
+    ...subtree,
+    ...remaining.slice(insertAt),
+  ];
+  clearTimelineOrganizeProposal();
+}
+
+function onTimelineDragStart(nodeId: string, event: DragEvent) {
+  timelineDragNodeId.value = nodeId;
+  timelineDragOverNodeId.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', nodeId);
+  }
+}
+
+function onTimelineDragEnd() {
+  timelineDragNodeId.value = null;
+  timelineDragOverNodeId.value = null;
+}
+
+function onTimelineDragOverNode(nodeId: string, event: DragEvent) {
+  if (!timelineDragNodeId.value || timelineDragNodeId.value === nodeId) return;
+  event.preventDefault();
+  timelineDragOverNodeId.value = nodeId;
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move';
+  }
+}
+
+function onTimelineDropOnNode(nodeId: string, event: DragEvent) {
+  event.preventDefault();
+  const dragNodeId = timelineDragNodeId.value;
+  onTimelineDragEnd();
+  if (!dragNodeId || dragNodeId === nodeId) return;
+  moveTimelineSubtree(dragNodeId, nodeId);
+}
+
+function onTimelineDropToRoot(event: DragEvent) {
+  event.preventDefault();
+  const dragNodeId = timelineDragNodeId.value;
+  onTimelineDragEnd();
+  if (!dragNodeId) return;
+  moveTimelineSubtree(dragNodeId, '');
+}
+
+function cancelTimelineDragHover() {
+  timelineDragOverNodeId.value = null;
 }
 
 function removeTimelineNode(nodeId: string) {
   const removeIds = collectTimelineDescendantIds(nodeId);
   removeIds.add(nodeId);
   draft.timeline.nodes = draft.timeline.nodes.filter((node) => !removeIds.has(node.id));
+  clearTimelineOrganizeProposal();
   if (selectedTimelineNodeId.value && removeIds.has(selectedTimelineNodeId.value)) {
     selectedTimelineNodeId.value = draft.timeline.nodes[0]?.id ?? null;
   }
+}
+
+async function organizeTimelineWithAI() {
+  if (!ensureApiConfigured('text')) return;
+  if (!draft.timeline.nodes.length) {
+    setStatus('当前没有时间线节点可整理。');
+    return;
+  }
+  timelineOrganizeBusy.value = true;
+  setStatus('正在生成时间线整理提案...');
+  try {
+    const result = await apiRequest<OrganizeTimelineResponse>('/ai/timeline/organize', {
+      method: 'POST',
+      body: JSON.stringify({
+        draft: clonePlain(draft),
+        settings: clonePlain(settings),
+      }),
+    });
+    if (!result.success || !result.data) {
+      setStatus(`时间线整理失败: ${result.message}`);
+      return;
+    }
+    timelineOrganizeProposal.value = normalizeTimelineInfo(result.data.proposalTimeline);
+    const summary = result.data.summary;
+    setStatus(
+      `已生成整理提案：节点 ${summary.nodeCountBefore} -> ${summary.nodeCountAfter}，根节点 ${summary.rootCountAfter}。`,
+    );
+  } finally {
+    timelineOrganizeBusy.value = false;
+  }
+}
+
+function applyTimelineOrganizeProposal() {
+  if (!timelineOrganizeProposal.value) return;
+  draft.timeline = normalizeTimelineInfo(clonePlain(timelineOrganizeProposal.value));
+  selectedTimelineNodeId.value = draft.timeline.nodes[0]?.id ?? null;
+  timelineOrganizeProposal.value = null;
+  setStatus('已应用时间线整理提案。');
+}
+
+function discardTimelineOrganizeProposal() {
+  if (!timelineOrganizeProposal.value) return;
+  timelineOrganizeProposal.value = null;
+  setStatus('已忽略时间线整理提案。');
 }
 
 function summarizeText(text: string, max = 40): string {
@@ -1220,7 +1701,8 @@ async function onStoryTextInputChange(event: Event) {
       return;
     }
     cardGenerateInput.value = content;
-    setStatus(`已加载短篇小说文本: ${file.name}`);
+    resetSegmentProgressState();
+    setStatus(`已加载小说文本: ${file.name}`);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     setStatus(`读取 txt 文件失败: ${detail}`);
@@ -1301,6 +1783,7 @@ async function exportCard() {
 
 function resetDraft() {
   applyDraftPayload(createDraft());
+  resetSegmentProgressState();
   selectedCharacterIndex.value = 0;
   selectedOpeningIndex.value = 0;
   selectedWorldEntryIndex.value = 0;
@@ -1430,22 +1913,78 @@ onMounted(async () => {
         <div class="editor-column">
           <section class="card">
             <div class="panel-header">
-              <h2>短篇小说一键生成</h2>
+              <h2>小说生成</h2>
             </div>
-            <p class="muted">这是一个根据短篇小说自动生成可游玩角色卡的工具：先抽取剧情与地点，再逐角色生成。</p>
+            <p class="muted">短篇可一键生成；长篇推荐使用“分段预览 -> 当前段生成 -> 下一段增量更新”的手动流程。</p>
             <div class="field">
-              <label for="cardGenerateInput">短篇小说全文（用于一键生成）</label>
+              <label for="cardGenerateInput">小说全文</label>
               <textarea
                 id="cardGenerateInput"
                 v-model="cardGenerateInput"
                 rows="7"
-                placeholder="粘贴短篇小说全文，或上传 txt。建议包含角色、地点、关键事件与时间推进。"
+                placeholder="粘贴小说全文，或上传 txt。建议包含角色、地点、关键事件与时间推进。"
               />
               <div class="inline-actions">
-                <button @click="pickStoryText" :disabled="cardGenerateBusy">上传短篇小说 txt</button>
+                <button @click="pickStoryText" :disabled="cardGenerateBusy || segmentPreviewBusy || segmentGenerateBusy">上传小说 txt</button>
                 <button @click="generateCardFromInput" :disabled="cardGenerateBusy">
                   <span v-if="cardGenerateBusy" class="loading-spinner loading-inline" />
                   {{ cardGenerateBusy ? '生成中...' : '根据短篇小说生成角色卡' }}
+                </button>
+              </div>
+            </div>
+            <div class="nested-card">
+              <div class="panel-header">
+                <h3>长篇分段增量模式（默认手动）</h3>
+              </div>
+              <div class="field-grid">
+                <label>硬切分上限（字符）</label>
+                <input v-model.number="maxCharsPerSegment" type="number" min="500" step="100" />
+                <label>切分策略</label>
+                <input :value="storySegmentationMode === 'chapter' ? 'chapter（章节优先）' : 'hard_buffer（硬切分）'" readonly />
+                <label>当前进度</label>
+                <input :value="`已完成 ${completedSegments} / ${totalSegments}`" readonly />
+              </div>
+              <div class="field">
+                <label>章节识别正则（可改）</label>
+                <textarea
+                  v-model="settings.storySegmentation.chapterRegex"
+                  rows="4"
+                  placeholder="默认已包含：第X章/卷/回/篇/集/部/幕、卷X、幕X、Chapter X、Volume X"
+                />
+              </div>
+              <div class="inline-actions">
+                <button @click="previewStorySegments" :disabled="segmentPreviewBusy || segmentGenerateBusy">
+                  <span v-if="segmentPreviewBusy" class="loading-spinner loading-inline" />
+                  {{ segmentPreviewBusy ? '预览生成中...' : '生成分段预览' }}
+                </button>
+                <button
+                  @click="generateCurrentSegment"
+                  :disabled="segmentPreviewBusy || segmentGenerateBusy || storySegments.length === 0"
+                >
+                  <span v-if="segmentGenerateBusy" class="loading-spinner loading-inline" />
+                  {{ segmentGenerateBusy ? '生成中...' : '生成当前段' }}
+                </button>
+                <button
+                  @click="generateNextSegment"
+                  :disabled="segmentPreviewBusy || segmentGenerateBusy || storySegments.length === 0 || allSegmentsCompleted"
+                >
+                  {{ allSegmentsCompleted ? '已完成全部分段' : '下一段增量更新' }}
+                </button>
+              </div>
+              <p v-if="latestSegmentReport" class="muted">
+                最近一段报告：新增角色 {{ latestSegmentReport.newCharactersCount }}，新增地点 {{ latestSegmentReport.newLocationsCount }}，新增节点 {{ latestSegmentReport.newTimelineNodesCount }}，冲突忽略 {{ latestSegmentReport.ignoredConflictCount }}。
+              </p>
+              <p v-if="storySegments.length === 0" class="muted">尚未生成分段预览。</p>
+              <div v-else class="overview-list">
+                <button
+                  v-for="segment in storySegments"
+                  :key="segment.segmentIndex"
+                  :class="['overview-item', { active: currentSegmentIndex === segment.segmentIndex }]"
+                  @click="chooseSegment(segment.segmentIndex)"
+                >
+                  <strong>第 {{ segment.segmentIndex + 1 }} 段 · {{ segment.title }}</strong>
+                  <span class="overview-meta">字符 {{ segment.charCount }} · 区间 {{ segment.start }}-{{ segment.end }}</span>
+                  <span class="overview-meta">{{ segment.preview }}</span>
                 </button>
               </div>
             </div>
@@ -1750,9 +2289,20 @@ onMounted(async () => {
           <section class="card">
             <div class="panel-header">
               <h2>时间线（剧情推进）</h2>
-              <button @click="addTimelineRootNode">添加根节点</button>
+              <div class="inline-actions">
+                <button @click="addTimelineRootNode">添加根节点</button>
+                <button @click="organizeTimelineWithAI" :disabled="timelineOrganizeBusy || draft.timeline.nodes.length === 0">
+                  <span v-if="timelineOrganizeBusy" class="loading-spinner loading-inline" />
+                  {{ timelineOrganizeBusy ? '整理中...' : '自动整理时间线（LLM）' }}
+                </button>
+              </div>
             </div>
-            <p class="muted">时间线独立编辑，导出时会自动转换为世界书“剧情推进”条目。</p>
+            <p class="muted">时间线独立编辑，导出时会自动转换为世界书“剧情推进”条目。支持拖拽重挂父子结构。</p>
+            <p class="muted">
+              基准：{{ draft.timeline.timeBaseline || 'T0=当前主线时刻' }}
+              · 格式：{{ draft.timeline.timeFormat || 'T±<offset> | 时间描述' }}
+              · 根节点 {{ timelineRootCount }} 个
+            </p>
             <div class="field-grid">
               <label>条目标题</label>
               <input v-model="draft.timeline.title" />
@@ -1763,6 +2313,37 @@ onMounted(async () => {
                 :value="draft.timeline.keywords.join(', ')"
                 @input="setTimelineKeywords(($event.target as HTMLInputElement).value)"
               />
+            </div>
+            <div v-if="timelineOrganizeProposal" class="nested-card">
+              <div class="panel-header">
+                <h3>时间线整理提案（可选）</h3>
+              </div>
+              <p class="muted">
+                提案基准：{{ timelineOrganizeProposal.timeBaseline }} · 格式：{{ timelineOrganizeProposal.timeFormat }}
+                · 节点 {{ timelineOrganizeProposal.nodes.length }} 个 · 根节点 {{ timelineProposalRootCount }} 个
+              </p>
+              <div class="inline-actions">
+                <button class="primary" @click="applyTimelineOrganizeProposal">采用提案</button>
+                <button @click="discardTimelineOrganizeProposal">保留当前时间线</button>
+              </div>
+              <div class="overview-list timeline-proposal-list">
+                <div
+                  v-for="(row, rowIndex) in timelineProposalRows"
+                  :key="`proposal-${row.node.id}`"
+                  class="overview-item timeline-item"
+                  :style="{ paddingLeft: `${0.85 + row.depth * 1.1}rem` }"
+                >
+                  <strong>{{ row.node.title || `提案节点 ${rowIndex + 1}` }}</strong>
+                  <span class="overview-meta">
+                    {{
+                      row.depth === 0
+                        ? '根节点'
+                        : `子节点 · 父节点: ${row.node.parentId || '（无）'}`
+                    }}
+                    · {{ row.node.timePoint || '未设时间点' }} · {{ summarizeText(row.node.event, 30) }}
+                  </span>
+                </div>
+              </div>
             </div>
             <div v-if="timelineRows.length > 0" class="timeline-graph-wrap">
               <svg
@@ -1805,6 +2386,14 @@ onMounted(async () => {
                 </g>
               </svg>
             </div>
+            <div
+              v-if="timelineRows.length > 0"
+              class="timeline-drop-root"
+              @dragover.prevent
+              @drop="onTimelineDropToRoot($event)"
+            >
+              拖到这里可设为根节点（parentId 为空）
+            </div>
             <div class="overview-list">
               <div
                 v-for="(row, rowIndex) in timelineRows"
@@ -1812,10 +2401,25 @@ onMounted(async () => {
                 class="overview-row"
               >
                 <button
-                  :class="['overview-item', 'timeline-item', { active: selectedTimelineNodeId === row.node.id }]"
+                  :class="[
+                    'overview-item',
+                    'timeline-item',
+                    {
+                      active: selectedTimelineNodeId === row.node.id,
+                      'timeline-item-drag-over': timelineDragOverNodeId === row.node.id,
+                      'timeline-item-dragging': timelineDragNodeId === row.node.id,
+                    },
+                  ]"
                   :style="{ paddingLeft: `${0.85 + row.depth * 1.1}rem` }"
+                  draggable="true"
+                  @dragstart="onTimelineDragStart(row.node.id, $event)"
+                  @dragend="onTimelineDragEnd"
+                  @dragover="onTimelineDragOverNode(row.node.id, $event)"
+                  @dragleave="cancelTimelineDragHover"
+                  @drop="onTimelineDropOnNode(row.node.id, $event)"
                   @click="selectTimelineNode(row.node.id)"
                 >
+                  <span class="timeline-drag-handle" title="拖到其他节点可挂为其子节点">⋮⋮</span>
                   <strong>{{ row.node.title || `节点 ${rowIndex + 1}` }}</strong>
                   <span class="overview-meta">
                     {{
@@ -1833,8 +2437,7 @@ onMounted(async () => {
                   </div>
                   <div class="inline-actions">
                     <button @click="addTimelineChildNode(row.node.id)">添加子节点</button>
-                    <button @click="moveTimelineNode(row.node.id, -1)">上移</button>
-                    <button @click="moveTimelineNode(row.node.id, 1)">下移</button>
+                    <span class="muted">拖动本节点到其他节点上，可调整父子从属；子节点会随主节点一起移动。</span>
                   </div>
                   <div class="field">
                     <label>节点标题</label>
@@ -1843,7 +2446,7 @@ onMounted(async () => {
                   <div class="field-grid">
                     <label>时间点/阶段</label>
                     <input v-model="row.node.timePoint" />
-                    <label>父节点（树结构）</label>
+                    <label>父节点（变更会连同子树一起移动）</label>
                     <select
                       :value="row.node.parentId"
                       @change="setTimelineNodeParent(row.node.id, ($event.target as HTMLSelectElement).value)"
@@ -2134,6 +2737,27 @@ onMounted(async () => {
               <span v-if="testingImageProvider" class="loading-spinner loading-inline" />
               {{ testingImageProvider ? '测试中...' : '图像连通性测试' }}
             </button>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="panel-header">
+            <h2>长篇分段设置</h2>
+          </div>
+          <div class="field-grid">
+            <label>默认硬切分上限</label>
+            <input v-model.number="settings.storySegmentation.maxCharsPerSegment" type="number" min="500" step="100" />
+          </div>
+          <div class="field">
+            <label>默认章节识别正则</label>
+            <textarea
+              v-model="settings.storySegmentation.chapterRegex"
+              rows="5"
+              placeholder="分段预览时优先用该正则识别章节标题"
+            />
+          </div>
+          <div class="inline-actions">
+            <button @click="saveSegmentationSettings">保存分段设置</button>
           </div>
         </section>
       </section>

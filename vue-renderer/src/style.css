@@ -215,6 +215,15 @@ input.checkbox {
   position: relative;
 }
 
+.timeline-item-drag-over {
+  border-color: rgba(78, 249, 255, 0.8);
+  box-shadow: 0 0 0 1px rgba(78, 249, 255, 0.35), 0 0 18px rgba(78, 249, 255, 0.2);
+}
+
+.timeline-item-dragging {
+  opacity: 0.72;
+}
+
 .timeline-item::before {
   content: "";
   position: absolute;
@@ -224,6 +233,31 @@ input.checkbox {
   width: 2px;
   border-radius: 999px;
   background: linear-gradient(180deg, rgba(78, 249, 255, 0.55), rgba(255, 77, 216, 0.4));
+}
+
+.timeline-drag-handle {
+  position: absolute;
+  right: 0.75rem;
+  top: 0.72rem;
+  font-size: 0.92rem;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  color: rgba(78, 249, 255, 0.85);
+  pointer-events: none;
+}
+
+.timeline-drop-root {
+  border: 1px dashed rgba(78, 249, 255, 0.55);
+  border-radius: 12px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  background: rgba(8, 22, 38, 0.58);
+}
+
+.timeline-proposal-list {
+  max-height: 260px;
+  overflow: auto;
 }
 
 .timeline-graph-wrap {

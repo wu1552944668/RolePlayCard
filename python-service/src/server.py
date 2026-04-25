@@ -80,6 +80,18 @@ def create_app(app_data_dir: str) -> Flask:
     def generate_card_from_story() -> Any:
         return jsonify(service.generate_card_from_story(request.get_json(force=True)))
 
+    @app.post("/api/ai/story-segments/preview")
+    def preview_story_segments() -> Any:
+        return jsonify(service.preview_story_segments(request.get_json(force=True)))
+
+    @app.post("/api/ai/card-from-story-segment")
+    def generate_card_from_story_segment() -> Any:
+        return jsonify(service.generate_card_from_story_segment(request.get_json(force=True)))
+
+    @app.post("/api/ai/timeline/organize")
+    def organize_timeline() -> Any:
+        return jsonify(service.organize_timeline(request.get_json(force=True)))
+
     @app.post("/api/files/upload-image")
     def upload_image() -> Any:
         upload = request.files.get("file")

@@ -397,6 +397,8 @@ def build_story_outline_prompt(story_text: str, draft: dict) -> str:
         5. 每个 plotProgression 节点必须包含稳定 id，且同一输出中 id 不可重复。
         6. 时间最前的第一个节点必须是根节点（parentId 为空）；时间继续向后时，默认是前一节点的子节点。
         7. 若同一时间点出现多个并行发展节点，则它们都应挂在同一父节点下形成分叉。
+        8. 若出现明显时间断层（如“三年前/童年回忆”后切回“当前/今夜/次日”），新阶段节点必须另起根节点（parentId 为空），不要强行续接。
+        9. 节点字段需简洁：title/timePoint 不超过 20 字；trigger/objective/conflict/outcome/nextHook 不超过 40 字；event 不超过 80 字。
 
         注意：
         - locations 与 plotProgression 是不同维度：locations 写“地点设定”，plotProgression 写“剧情节点推进”。
@@ -406,6 +408,82 @@ def build_story_outline_prompt(story_text: str, draft: dict) -> str:
         {build_context(draft)}
 
         小说文本：
+        {_trim(story_text, None)}
+        """
+    )
+
+
+def build_story_outline_prompt_segment(story_text: str, draft: dict) -> str:
+    return dedent(
+        f"""
+        你是角色卡结构提取器。当前任务是“长篇分段增量提取”，必须返回严格 JSON。
+
+        关键要求：
+        1. 只抽取当前分段文本中出现/明确提及的信息，不要臆造分段外剧情。
+        2. 输出尽量精炼，避免长段落；保证 JSON 完整闭合。
+        3. 不要 markdown，不要解释，不要额外文字。
+
+        输出 JSON 结构：
+        {{
+          "storySummary": "40-120字，仅总结本段",
+          "card": {{
+            "name": "可为空字符串",
+            "description": "可为空字符串"
+          }},
+          "characters": [
+            {{
+              "name": "角色名",
+              "age": "可为空",
+              "hints": "30-80字",
+              "triggerKeywords": ["关键词1", "关键词2"]
+            }}
+          ],
+          "openings": [
+            {{
+              "title": "时间点标题",
+              "greeting": "可为空",
+              "scenario": "场景摘要",
+              "exampleDialogue": "可为空",
+              "firstMessage": "首条消息"
+            }}
+          ],
+          "locations": [
+            {{
+              "title": "地点名",
+              "keywords": ["关键词1", "关键词2"],
+              "content": "地点摘要"
+            }}
+          ],
+          "plotProgression": {{
+            "nodes": [
+              {{
+                "id": "n1",
+                "title": "节点标题",
+                "parentId": "",
+                "timePoint": "时间点",
+                "trigger": "触发条件",
+                "event": "关键事件",
+                "objective": "目标",
+                "conflict": "冲突",
+                "outcome": "结果",
+                "nextHook": "后续线索"
+              }}
+            ]
+          }}
+        }}
+
+        数量上限（务必遵守）：
+        - characters 最多 4 个
+        - openings 最多 3 个
+        - locations 最多 5 个
+        - plotProgression.nodes 最多 6 个，最少 2 个
+        - 节点字段简洁：title/timePoint <= 20 字；trigger/objective/conflict/outcome/nextHook <= 36 字；event <= 72 字
+        - 若“回忆/三年前”切换到“当前/今夜/次日”等主线阶段，必须另起根节点（parentId 为空）
+
+        已有草稿上下文（可参考但不受限）：
+        {build_context(draft)}
+
+        当前分段文本：
         {_trim(story_text, None)}
         """
     )
@@ -513,6 +591,8 @@ def build_plot_progression_prompt(
         5. 每个节点必须给出唯一 id。
         6. 时间最前的第一个节点必须是根节点；后续时间点默认接在前一节点下。
         7. 同一时间点的并行节点要挂在同一父节点下，表示“同时发展”的分叉。
+        8. 若时间从“多年以前/三年前/童年回忆”等明显跳到“当前/此刻/今夜/次日”，应开启新主线根节点（parentId 为空）。
+        9. 节点字段务必短句化：title/timePoint <= 20 字；trigger/objective/conflict/outcome/nextHook <= 40 字；event <= 80 字。
 
         已抽取角色：
         {_json_preview(characters, None)}
@@ -528,6 +608,95 @@ def build_plot_progression_prompt(
 
         故事原文全文（必须参考，不可忽略）：
         {_trim(story_text, None) or "无"}
+
+        当前草稿上下文：
+        {build_context(draft)}
+        """
+    )
+
+
+def build_timeline_bridge_decision_prompt(
+    anchor_node: dict[str, object],
+    candidate_nodes: list[dict[str, object]],
+) -> str:
+    return dedent(
+        f"""
+        你是剧情时间线结构审校器。你需要判断“新分段中的根节点”是否应该连接到“上一段末尾锚点节点”之后。
+        你的目标是保持时间顺序合理：顺叙应连接；明显倒叙/回忆/平行线可不连接。
+
+        输入：
+        - anchorNode: 上一段末尾锚点
+        - candidateRoots: 当前分段中待判断的根节点（无父节点）
+
+        请输出严格 JSON（不要 markdown，不要解释）：
+        {{
+          "decisions": [
+            {{
+              "nodeId": "候选节点ID",
+              "bridgeToAnchor": true
+            }}
+          ]
+        }}
+
+        约束：
+        1. nodeId 必须来自 candidateRoots。
+        2. bridgeToAnchor=true 表示将该节点 parentId 设为 anchorNode.id。
+        3. bridgeToAnchor=false 表示保持该节点为独立根节点。
+        4. 若信息不足，优先 true（保持主线连续）。
+
+        anchorNode:
+        {_json_preview(anchor_node, None)}
+
+        candidateRoots:
+        {_json_preview(candidate_nodes, None)}
+        """
+    )
+
+
+def build_timeline_organize_prompt(
+    timeline: dict[str, object],
+    draft: dict[str, object],
+) -> str:
+    nodes = timeline.get("nodes", []) if isinstance(timeline, dict) else []
+    return dedent(
+        f"""
+        你是剧情时间线总编。你需要“重排 + 重写 + 统一时间格式”，输出一个可应用的时间线提案。
+        输出必须是严格 JSON，不要 markdown，不要解释，不要额外文字。
+
+        目标：
+        1. 全部节点采用同一时间基准：T0（当前主线时刻）。
+        2. 全部 timePoint 采用统一格式：`T±<offset> | <时间描述>`。
+        3. 按时间顺序重排节点；明显回忆段可以在前，但切回当前主线时必须另起根节点。
+        4. 修复 parentId：禁止环、禁止无效父节点；同一阶段分支要挂在同一父节点下。
+        5. 压缩文本：节点内容简洁可执行，不写长散文。
+
+        输出 JSON 结构：
+        {{
+          "timeBaseline": "T0=当前主线时刻（一句话说明）",
+          "timeFormat": "T±<offset> | 时间描述",
+          "nodes": [
+            {{
+              "id": "可沿用旧ID，若冲突可重命名",
+              "parentId": "父节点ID，根节点为空字符串",
+              "title": "节点标题（<=24字）",
+              "timePoint": "T-3Y | 三年前",
+              "trigger": "触发条件（<=48字）",
+              "event": "关键事件（<=96字）",
+              "objective": "角色目标（<=56字）",
+              "conflict": "主要冲突（<=56字）",
+              "outcome": "节点结果（<=56字）",
+              "nextHook": "下一线索（<=48字）"
+            }}
+          ]
+        }}
+
+        额外约束：
+        - 节点数量 3-12。
+        - 若原节点已足够好，允许仅做轻微重写与排序。
+        - 尽量保留原节点语义，不随意删除关键事件。
+
+        当前时间线：
+        {_json_preview(nodes, None)}
 
         当前草稿上下文：
         {build_context(draft)}
